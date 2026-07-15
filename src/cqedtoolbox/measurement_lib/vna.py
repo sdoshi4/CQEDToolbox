@@ -1,18 +1,26 @@
 """Tools for VNA measurements."""
-from typing import Optional
+from typing import Optional, Union
 from time import sleep
+import ast
+import re
+import numpy as np
 
-from labcore.measurement import recording, independent, dependent, indep, dep
+from labcore.measurement import recording, independent, dependent, indep, dep, pointer
 
 from cqedtoolbox.instruments.qcodes_drivers.Keysight.Keysight_P937A import Keysight_P9374A_SingleChannel
+from cqedtoolbox.instruments.qcodes_drivers.CopperMountain.M5180 import M5180
 from cqedtoolbox.instruments.qcodes_drivers.SignalCore.SignalCore_sc5511a import SignalCore_SC5511A
 
 #: VNA
-vna: Optional[Keysight_P9374A_SingleChannel] = None
+vna: Optional[Union[Keysight_P9374A_SingleChannel, M5180]] = None
 
 #: qubit generator -- used for twotone spec
 qubit_generator: Optional[SignalCore_SC5511A] = None
 
+# Make sure this is called before referencing the functions below
+def set_vna(instrument):
+    global vna
+    vna = instrument
 
 @recording(
     independent('frequency', unit='Hz'),
@@ -128,3 +136,123 @@ def configure_qubit_generator_for_twotone_spec(frequencies, naverages, dwell_tim
     qubit_generator.tri_waveform(0)
     # set the sweep direction to go from low to high
     qubit_generator.sweep_dir(0)
+
+
+# Labcore pointers to enable axis sweeps
+# Before using these, ensure you set_vna() in your code first
+
+@pointer(indep('power', unit='dBm'))
+def vna_power(power_list):
+    for power in power_list:
+        vna.power(power)
+        yield power
+ 
+ 
+@pointer(indep('frequency', unit='Hz'))
+def vna_center(freq_list):
+    for frequency in freq_list:
+        vna.fcenter(frequency)
+        yield frequency
+ 
+ 
+@pointer(indep('span', unit='Hz'))
+def vna_span(span_list):
+    for span in span_list:
+        vna.fspan(span)
+        yield span
+ 
+ 
+@pointer(indep('ifbw', unit='Hz'))
+def vna_ifbw(ifbw_list):
+    for ifbw in ifbw_list:
+        vna.ifbw(ifbw)
+        yield ifbw
+ 
+ 
+@pointer(indep('averages', unit=''))
+def vna_avg(avg_list):
+    for averages in avg_list:
+        vna.avg_num(averages)
+        yield averages
+ 
+# These are needed because ProxyParameter objects like vna.fcenter() don't have the __name__ attribute, and therefore cannot be passed into sweeps as update functions
+def set_fcenter(fcenter):
+    vna.fcenter(fcenter)
+ 
+ 
+def get_fcenter():
+    return vna.fcenter()
+ 
+ 
+def set_fspan(fspan):
+    vna.fspan(fspan)
+ 
+ 
+def get_fspan():
+    return vna.fspan()
+ 
+ 
+def set_avgnum(avgnum):
+    vna.avg_num(avgnum)
+ 
+ 
+def set_power(power):
+    vna.power(power)
+ 
+ 
+def set_ifbw(ifbw):
+    vna.ifbw(ifbw)
+
+# Non-labcore sweep
+def s_parameter_sweep(start_frequency, stop_frequency, num_points, s_parameter, naverages=None, settling_time=1):
+    vna.fcenter((start_frequency + stop_frequency) / 2)
+    vna.fspan(stop_frequency - start_frequency)
+    vna.num_points(num_points)
+    vna.trace_1.s_parameter(s_parameter)
+
+    vna.trigger_source("INT")
+    vna.trigger_mode("SWE")
+    vna.sweep_mode("CONT")
+    if naverages is not None:
+        vna.avg_num(naverages)
+    vna.averaging(1)
+    vna.clear_averages()
+
+    sleep(settling_time)
+
+    freqs = vna.trace_1.frequency()
+    trace = vna.trace_1.data()
+
+    return freqs, trace
+
+
+# Add the recording decorator to use in labcore sweeps
+s_parameter_sweep_action = recording(
+    independent('frequency', unit='Hz'),
+    dependent('trace', depends_on=['frequency'])
+) (s_parameter_sweep)
+
+
+# This is for converting your serialized s_parameter_sweep output to a numpy array
+def decode_vna_trace(value) -> np.ndarray:
+    if isinstance(value, np.ndarray):
+        return value
+ 
+    # Convert serializer artifacts such as np.float64(50.0) to 50.0.
+    cleaned = re.sub(
+        r"np\.float(?:16|32|64)\(([^()]*)\)",
+        r"\1",
+        value,
+    )
+    payload = ast.literal_eval(cleaned)
+ 
+    if payload.get("_class_type") != "numpy.array":
+        raise ValueError("Not an InstrumentServer-serialized NumPy array")
+ 
+    return np.asarray(
+        [
+            complex(float(point["real"]), float(point["imag"]))
+            for point in payload["object"]
+        ],
+        dtype=np.complex128,
+    )
