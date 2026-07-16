@@ -736,7 +736,9 @@ class M5180(VisaInstrument):
         Args:
             trigger (str): Trigger source
         """
-        self.write('TRIG:SOUR '+trigger.upper())
+        # Keysight calls its internal trigger source IMM.  Copper Mountain uses INT, so we translate here.
+        source = 'INT' if trigger.upper() == 'IMM' else trigger.upper()
+        self.write('TRIG:SOUR ' + source)
  
     def get_s(self): 
     # -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,

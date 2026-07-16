@@ -137,43 +137,6 @@ def configure_qubit_generator_for_twotone_spec(frequencies, naverages, dwell_tim
     # set the sweep direction to go from low to high
     qubit_generator.sweep_dir(0)
 
-
-# Labcore pointers to enable axis sweeps
-# Before using these, ensure you set_vna() in your code first
-
-@pointer(indep('power', unit='dBm'))
-def vna_power(power_list):
-    for power in power_list:
-        vna.power(power)
-        yield power
- 
- 
-@pointer(indep('frequency', unit='Hz'))
-def vna_center(freq_list):
-    for frequency in freq_list:
-        vna.fcenter(frequency)
-        yield frequency
- 
- 
-@pointer(indep('span', unit='Hz'))
-def vna_span(span_list):
-    for span in span_list:
-        vna.fspan(span)
-        yield span
- 
- 
-@pointer(indep('ifbw', unit='Hz'))
-def vna_ifbw(ifbw_list):
-    for ifbw in ifbw_list:
-        vna.ifbw(ifbw)
-        yield ifbw
- 
- 
-@pointer(indep('averages', unit=''))
-def vna_avg(avg_list):
-    for averages in avg_list:
-        vna.avg_num(averages)
-        yield averages
  
 # These are needed because ProxyParameter objects like vna.fcenter() don't have the __name__ attribute, and therefore cannot be passed into sweeps as update functions
 def set_fcenter(fcenter):
@@ -204,13 +167,51 @@ def set_ifbw(ifbw):
     vna.ifbw(ifbw)
 
 # Non-labcore sweep
-def s_parameter_sweep(start_frequency, stop_frequency, num_points, s_parameter, naverages=None, settling_time=1):
+def s_parameter_vs_freq(start_frequency, stop_frequency, num_points=200, s_parameter='S21', naverages=None, settling_time=1):
+    """
+    Acquire one complex S-parameter trace over a frequency range.
+
+    Configures "trace_1" for the selected S-parameter, sets the VNA
+    center frequency, span, and number of sweep points, enables internal
+    continuous sweeping, clears the averaging buffer, waits for acquisition,
+    and returns the trace frequency axis and complex data.
+
+    This function is compatible with the Keysight and M5180 VNA drivers.
+    The M5180 uses ``settling_time`` to allow the sweep and averaging to
+    complete; the Keysight driver waits internally when trace data is read.
+
+    Parameters
+    ----------
+    start_frequency : float
+        Sweep start frequency in Hz.
+    stop_frequency : float
+        Sweep stop frequency in Hz. Must exceed ``start_frequency``.
+    num_points : int, optional
+        Number of frequency points in the VNA sweep. Default is 200.
+    s_parameter : {'S11', 'S12', 'S21', 'S22'}, optional
+        S-parameter assigned to ``trace_1``. Default is ``'S21'``.
+    naverages : int or None, optional
+        VNA average count. If None, retains the currently configured value;
+        this is useful when an outer LabCore sweep sets ``avg_num``.
+    settling_time : float, optional
+        Delay in seconds before reading the trace. For the M5180, choose a
+        value long enough for the configured IF bandwidth, point count, and
+        average count. Default is 1 second.
+
+    Returns
+    -------
+    frequency : numpy.ndarray
+        Frequency values in Hz.
+    trace : numpy.ndarray or str
+        Complex S-parameter data from ``trace_1``. Older InstrumentServer
+        versions may return its serialized representation as a string.
+    """
     vna.fcenter((start_frequency + stop_frequency) / 2)
     vna.fspan(stop_frequency - start_frequency)
     vna.num_points(num_points)
     vna.trace_1.s_parameter(s_parameter)
 
-    vna.trigger_source("INT")
+    vna.trigger_source("IMM")
     vna.trigger_mode("SWE")
     vna.sweep_mode("CONT")
     if naverages is not None:
@@ -227,32 +228,7 @@ def s_parameter_sweep(start_frequency, stop_frequency, num_points, s_parameter, 
 
 
 # Add the recording decorator to use in labcore sweeps
-s_parameter_sweep_action = recording(
+s_parameter_vs_freq_action = recording(
     independent('frequency', unit='Hz'),
     dependent('trace', depends_on=['frequency'])
-) (s_parameter_sweep)
-
-
-# This is for converting your serialized s_parameter_sweep output to a numpy array
-def decode_vna_trace(value) -> np.ndarray:
-    if isinstance(value, np.ndarray):
-        return value
- 
-    # Convert serializer artifacts such as np.float64(50.0) to 50.0.
-    cleaned = re.sub(
-        r"np\.float(?:16|32|64)\(([^()]*)\)",
-        r"\1",
-        value,
-    )
-    payload = ast.literal_eval(cleaned)
- 
-    if payload.get("_class_type") != "numpy.array":
-        raise ValueError("Not an InstrumentServer-serialized NumPy array")
- 
-    return np.asarray(
-        [
-            complex(float(point["real"]), float(point["imag"]))
-            for point in payload["object"]
-        ],
-        dtype=np.complex128,
-    )
+) (s_parameter_vs_freq)
