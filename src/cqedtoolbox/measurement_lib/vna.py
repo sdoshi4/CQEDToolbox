@@ -1,24 +1,21 @@
 """Tools for VNA measurements."""
-from typing import Optional, Union
+from typing import Optional
 from time import sleep
-import ast
-import re
-import numpy as np
 
 from labcore.measurement import recording, independent, dependent, indep, dep, pointer
 
-from cqedtoolbox.instruments.qcodes_drivers.Keysight.Keysight_P937A import Keysight_P9374A_SingleChannel
-from cqedtoolbox.instruments.qcodes_drivers.CopperMountain.M5180 import M5180
 from cqedtoolbox.instruments.qcodes_drivers.SignalCore.SignalCore_sc5511a import SignalCore_SC5511A
+from cqedtoolbox.measurement_lib.vna_type import VnaType
 
 #: VNA
-vna: Optional[Union[Keysight_P9374A_SingleChannel, M5180]] = None
+
+vna: VnaType = None
 
 #: qubit generator -- used for twotone spec
 qubit_generator: Optional[SignalCore_SC5511A] = None
 
 # Make sure this is called before referencing the functions below
-def set_vna(instrument):
+def set_vna(instrument: VnaType):
     global vna
     vna = instrument
 
@@ -137,35 +134,6 @@ def configure_qubit_generator_for_twotone_spec(frequencies, naverages, dwell_tim
     # set the sweep direction to go from low to high
     qubit_generator.sweep_dir(0)
 
- 
-# These are needed because ProxyParameter objects like vna.fcenter() don't have the __name__ attribute, and therefore cannot be passed into sweeps as update functions
-def set_fcenter(fcenter):
-    vna.fcenter(fcenter)
- 
- 
-def get_fcenter():
-    return vna.fcenter()
- 
- 
-def set_fspan(fspan):
-    vna.fspan(fspan)
- 
- 
-def get_fspan():
-    return vna.fspan()
- 
- 
-def set_avgnum(avgnum):
-    vna.avg_num(avgnum)
- 
- 
-def set_power(power):
-    vna.power(power)
- 
- 
-def set_ifbw(ifbw):
-    vna.ifbw(ifbw)
-
 # Non-labcore sweep
 def s_parameter_vs_freq(start_frequency, stop_frequency, num_points=200, s_parameter='S21', naverages=None, settling_time=1):
     """
@@ -179,6 +147,13 @@ def s_parameter_vs_freq(start_frequency, stop_frequency, num_points=200, s_param
     This function is compatible with the Keysight and M5180 VNA drivers.
     The M5180 uses ``settling_time`` to allow the sweep and averaging to
     complete; the Keysight driver waits internally when trace data is read.
+
+    Note: To use in a labcore sweep, add the @recording decorator with appropriate independent and dependent variables.
+    Ex: 
+        recording(
+            independent('frequency', unit='Hz'),
+            dependent('trace', depends_on=['frequency'])
+                ) (s_parameter_vs_freq)
 
     Parameters
     ----------
@@ -225,10 +200,3 @@ def s_parameter_vs_freq(start_frequency, stop_frequency, num_points=200, s_param
     trace = vna.trace_1.data()
 
     return freqs, trace
-
-
-# Add the recording decorator to use in labcore sweeps
-s_parameter_vs_freq_action = recording(
-    independent('frequency', unit='Hz'),
-    dependent('trace', depends_on=['frequency'])
-) (s_parameter_vs_freq)
