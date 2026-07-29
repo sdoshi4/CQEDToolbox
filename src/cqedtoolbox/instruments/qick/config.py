@@ -39,7 +39,7 @@ class QBoardConfig:
 
         soc, soccfg = make_proxy(ns_host = self.nameserver_host, 
                                  ns_port = self.nameserver_port, 
-                                 ns_name = self.nameserver_name,
+                                 proxy_name = self.nameserver_name,
                                  remote_traceback = True)
 
         self.soc = soc
