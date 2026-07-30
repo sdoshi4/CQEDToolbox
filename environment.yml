@@ -28,4 +28,3 @@ dependencies:
   - gitpython
   - watchdog
   - pywavelets
-  - qcodes_contrib_drivers
