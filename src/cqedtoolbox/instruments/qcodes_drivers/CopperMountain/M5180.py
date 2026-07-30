@@ -187,7 +187,10 @@ class PointIQ(_BasePointIQ):
                                 'start or stop.'.format(self.instrument.fstop()-self.instrument.fstart()))
 
         self.instrument.write('CALC1:PAR:COUN 1') # 1 trace
-        self.instrument.write('CALC1:PAR1:DEF {}'.format(self.name[-3:]))
+        # These parameters are named ``point_sXX_iq``, so the upstream driver's fixed
+        # ``self.name[-3:]`` slice sends the ``_iq`` suffix instead of the S parameter.
+        s_parameter = self.name.removeprefix('point_').removesuffix('_iq')
+        self.instrument.write('CALC1:PAR1:DEF {}'.format(s_parameter))
         self.instrument.trigger_source('bus') # set the trigger to bus
         self.instrument.write('TRIG:SEQ:SING') # Trigger a single sweep
         self.instrument.ask('*OPC?') # Wait for measurement to complete
