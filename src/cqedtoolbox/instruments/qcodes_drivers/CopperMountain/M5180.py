@@ -258,6 +258,23 @@ class M5180(_ContribM5180):
             **kwargs,
         )
 
+        # The POL substitution in add_parameter depends on the contrib driver passing
+        # parameter_class as a keyword and on the three imported base classes keeping
+        # their names.  If any of that changes, the substitution stops applying and
+        # every read silently returns SMITH impedance data that _db() converts into
+        # plausible-looking dB -- so verify it took effect rather than trusting it.
+        for parameter_name, expected_class in (
+            ("s21", FrequencySweepMagPhase),
+            ("point_s21", PointMagPhase),
+            ("point_s21_iq", PointIQ),
+        ):
+            assert isinstance(self.parameters.get(parameter_name), expected_class), (
+                f"{name}.{parameter_name} is not a {expected_class.__name__}. You are "
+                "most likely using a newer qcodes_contrib_drivers than this driver was "
+                "written against: its M5180 no longer matches _POLAR_PARAMETER_CLASSES, "
+                "so readings would be SMITH impedance instead of a+bi."
+            )
+
         # Preserve the current driver's zero-span API.  The native contrib
         # driver uses a minimum of one hertz, which rejects vna.py's CW setup.
         self.span.vals = Numbers(min_value=0, max_value=18e9 - 1)
