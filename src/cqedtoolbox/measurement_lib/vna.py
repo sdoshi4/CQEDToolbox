@@ -2,14 +2,14 @@
 from typing import Optional
 from time import sleep
 
-from labcore.measurement import recording, independent, dependent, indep, dep, pointer
+from labcore.measurement import recording, independent, dependent, indep, dep
 
 from cqedtoolbox.instruments.qcodes_drivers.SignalCore.SignalCore_sc5511a import SignalCore_SC5511A
 from cqedtoolbox.measurement_lib.vna_type import VnaType
 
 #: VNA
 
-vna: VnaType = None
+vna: Optional[VnaType] = None
 
 #: qubit generator -- used for twotone spec
 qubit_generator: Optional[SignalCore_SC5511A] = None
