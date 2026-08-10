@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 from dataclasses import dataclass, field
 
+import lmfit
 import numpy as np
 from numpy.typing import ArrayLike
 import matplotlib.pyplot as plt
@@ -34,6 +35,8 @@ class UnwindAndFitRet:
     fit_result: FitResult
     residuals: ArrayLike
     snr: float
+    linewidth: float
+    rejection_reason: str | None
     fig: plt.Figure
     ax: plt.Axes
 
@@ -347,7 +350,11 @@ class ResonatorSpectroscopy(ProtocolOperation):
         self._register_check(
             "quality_check",
             self._check_quality,
-            [self._window_shift, self._increase_sampling, self._increase_averaging],
+            # Order matters: labcore picks the first correction that can still be
+            # applied.  Resolving/averaging the *current* window has to come first,
+            # otherwise a failed check immediately walks away from a resonator that
+            # was only badly resolved.
+            [self._increase_sampling, self._increase_averaging, self._window_shift],
         )
 
         self._register_success_update(
@@ -374,6 +381,7 @@ class ResonatorSpectroscopy(ProtocolOperation):
         self.phase = None
         self.snr = None
         self.fit_result = None
+        self.fit_diagnostics = None
         self.improvements = None
 
     def _measure_qick(self) -> Path:
@@ -412,6 +420,14 @@ class ResonatorSpectroscopy(ProtocolOperation):
 
     @staticmethod
     def add_mag_and_unwind_and_fit(frequencies, signal_raw, fig_title="") -> UnwindAndFitRet:
+        frequencies = np.asarray(frequencies, dtype=float)
+        signal_raw = np.asarray(signal_raw, dtype=complex)
+        order = np.argsort(frequencies)
+        frequencies = frequencies[order]
+        signal_raw = signal_raw[order]
+        if frequencies.size < 25:
+            raise ValueError("Resonator spectroscopy needs at least 25 frequency points")
+
         phase_unwrap = np.unwrap(np.angle(signal_raw))
         phase_slope = np.polyfit(frequencies, phase_unwrap, 1)[0]
 
@@ -419,14 +435,105 @@ class ResonatorSpectroscopy(ProtocolOperation):
         magnitude = np.abs(signal_raw)
         phase = np.arctan2(signal_unwind.imag, signal_unwind.real)
 
+        n = magnitude.size
+        step = float(np.median(np.diff(frequencies)))
+        span = float(frequencies[-1] - frequencies[0])
+
+        # Linear off-resonant baseline taken from the outer ~15% of the sweep, so
+        # the feature test below is insensitive to overall gain and to slopes in
+        # the transmission of the line.
+        edge = max(3, n // 7)
+        edge_idx = np.r_[np.arange(edge), np.arange(n - edge, n)]
+        base_coeff = np.polyfit(frequencies[edge_idx], magnitude[edge_idx], 1)
+        baseline = np.polyval(base_coeff, frequencies)
+        deviation = magnitude - baseline
+
+        # Smooth the *signed* deviation so that noise averages towards zero.
+        # Taking |.| before smoothing would rectify the noise into a positive
+        # floor of ~0.8 sigma and make the SNR below independent of averaging.
+        smooth_width = 5
+        smoothed = np.convolve(deviation, np.ones(smooth_width) / smooth_width, mode="same")
+        point_noise = (1.4826 * np.median(np.abs(deviation - smoothed))
+                       / np.sqrt(1 - 1 / smooth_width))
+        feature_noise = point_noise / np.sqrt(smooth_width)
+
+        peak_index = int(np.argmax(np.abs(smoothed)))
+        feature_height = float(np.abs(smoothed[peak_index]))
+        snr = feature_height / feature_noise if feature_noise > 0 else float("inf")
+
+        # Half-height width of the feature; doubles as the Q_l seed for the fit.
+        half_height = feature_height / 2
+        left = np.flatnonzero(np.abs(smoothed[:peak_index]) <= half_height)
+        right = np.flatnonzero(np.abs(smoothed[peak_index + 1:]) <= half_height)
+        contained = bool(left.size and right.size)
+        if contained:
+            kappa = float(frequencies[peak_index + 1 + right[0]] - frequencies[left[-1]])
+        else:
+            kappa = span / 10
+        kappa = max(kappa, 2 * step)
+
+        f0_guess = float(frequencies[peak_index])
+        base_level = float(np.median(magnitude[edge_idx]))
+        amplitude = max(base_level, np.finfo(float).eps)
+        contrast = float(np.clip(feature_height / amplitude, 0.02, 0.9))
+        q_l = f0_guess / kappa
+        # A linewidth wider than the span or narrower than two frequency steps
+        # cannot locate a resonator, so the fit is not allowed to go there.
+        q_min = f0_guess / span
+        q_e_max = f0_guess / (2 * step)
+
+        fit_params = {
+            "A": lmfit.Parameter("A", value=amplitude, min=0.1 * amplitude, max=10 * amplitude),
+            "f_0": lmfit.Parameter("f_0", value=f0_guess, min=frequencies[0], max=frequencies[-1]),
+            # Q_i only gets a generous physical ceiling: leaving it unbounded lets
+            # the optimizer run it to infinity, which is exactly the zero-depth
+            # spike a perfectly overcoupled hanger produces.  Q_e sets the
+            # observable width, so that is the one capped by the sampling.
+            "Q_i": lmfit.Parameter("Q_i", value=float(np.clip(q_l / (1 - contrast), q_min, 1e6)),
+                                   min=q_min, max=1e6),
+            "Q_e_mag": lmfit.Parameter("Q_e_mag", value=float(np.clip(q_l / contrast, q_min, q_e_max)),
+                                       min=q_min, max=q_e_max),
+            # |theta| < pi/2 keeps Q_c = Q_e_mag / cos(theta) positive while still
+            # allowing the circle rotation from an impedance mismatch.
+            "theta": lmfit.Parameter("theta", value=0.0, min=-np.pi / 2 + 0.05, max=np.pi / 2 - 0.05),
+            "phase_offset": lmfit.Parameter("phase_offset",
+                                            value=float(np.angle(np.mean(signal_unwind[edge_idx]))),
+                                            min=-2 * np.pi, max=2 * np.pi),
+            # The bulk delay was already removed above, so only a small residual
+            # slope is expected here.
+            "phase_slope": lmfit.Parameter("phase_slope", value=0.0,
+                                           min=-20 * np.pi / span, max=20 * np.pi / span),
+            "transmission_slope": lmfit.Parameter("transmission_slope",
+                                                  value=float(np.clip(base_coeff[0] * f0_guess / amplitude,
+                                                                      -500, 500)),
+                                                  min=-500, max=500),
+        }
+
         fit = HangerResponseBruno(frequencies, signal_unwind)
-        fit_result = fit.run(fit)
+        fit_result = fit.run(params=fit_params)
         fit_curve = fit_result.eval()
         residuals = signal_unwind - fit_curve
 
-        amp = fit_result.params["A"].value
-        noise = np.std(residuals)
-        snr = np.abs(amp / (4 * noise))
+        params = fit_result.params
+        q_i = params["Q_i"].value
+        q_e = params["Q_e_mag"].value
+        cos_theta = float(np.cos(params["theta"].value))
+        if q_i > 0 and q_e > 0 and cos_theta > 0:
+            q_c = q_e / cos_theta
+            q_loaded = 1.0 / (1.0 / q_i + 1.0 / q_c)
+            linewidth = float(params["f_0"].value / q_loaded)
+        else:
+            linewidth = float("nan")
+
+        f_0 = float(params["f_0"].value)
+        reasons = []
+        if not contained:
+            reasons.append("no contained half-height feature")
+        if not frequencies[0] + step < f_0 < frequencies[-1] - step:
+            reasons.append("f_0 at sweep edge")
+        if not np.isfinite(linewidth) or not 2 * step <= linewidth <= 0.25 * span:
+            reasons.append("linewidth unresolved or wider than a quarter of the span")
+        rejection_reason = "; ".join(reasons) if reasons else None
 
         fig, ax = plt.subplots()
         ax.set_title(fig_title)
@@ -444,6 +551,8 @@ class ResonatorSpectroscopy(ProtocolOperation):
             fit_result=fit_result,
             residuals=residuals,
             snr=snr,
+            linewidth=linewidth,
+            rejection_reason=rejection_reason,
             fig=fig,
             ax=ax,
         )
@@ -485,37 +594,48 @@ class ResonatorSpectroscopy(ProtocolOperation):
             self.phase = ret.phase
             self.snr = ret.snr
             self.fit_result = ret.fit_result
+            self.fit_diagnostics = ret
 
             ds.add(fit_curve=ret.fit_curve,
                    fit_result=ret.fit_result,
                    params=serialize_fit_params(ret.fit_result.params),
-                   snr=float(ret.snr))
+                   snr=float(ret.snr),
+                   linewidth=float(ret.linewidth),
+                   rejection_reason=ret.rejection_reason or "")
             ds.add_figure(self.name, fig=ret.fig)
 
             image_path = ds._new_file_path(ds.savefolders[1], self.name, suffix="png")
             self.figure_paths.append(image_path)
 
     def _check_quality(self) -> CheckResult:
-        if self.snr is None or self.fit_result is None:
-            raise RuntimeError("SNR and fit result must be set before checking quality")
+        if self.snr is None or self.fit_result is None or self.fit_diagnostics is None:
+            raise RuntimeError("Fit diagnostics must be set before checking quality")
 
         threshold = self.snr_threshold()
         snr_passed = self.snr >= threshold
 
         max_error = self.max_fit_param_error()
         param = self.fit_result.params["f_0"]
+        linewidth = self.fit_diagnostics.linewidth
         bad_param = None
+        # f_0 is an absolute frequency, so stderr/f_0 is ~1e-4 even for a useless
+        # fit.  The scale that decides whether we located the resonance is the
+        # linewidth.
         if param.stderr is None:
             bad_param = "f_0(no stderr)"
-        elif param.value == 0 or abs(param.stderr / param.value) > max_error:
-            pct = abs(param.stderr / param.value) * 100 if param.value != 0 else float("inf")
-            bad_param = f"f_0({pct:.0f}%)"
+        elif not np.isfinite(linewidth) or linewidth <= 0:
+            bad_param = "invalid linewidth"
+        elif abs(param.stderr / linewidth) > max_error:
+            bad_param = f"f_0/linewidth({abs(param.stderr / linewidth) * 100:.0f}%)"
 
-        fit_passed = bad_param is None
+        fit_passed = bad_param is None and self.fit_diagnostics.rejection_reason is None
         passed = snr_passed and fit_passed
 
-        parts = [f"SNR={self.snr:.3f} (threshold={threshold:.3f})"]
+        parts = [f"feature SNR={self.snr:.3f} (threshold={threshold:.3f})",
+                 f"linewidth={linewidth:.4g}"]
         if bad_param:
             parts.append(f"high-error param: {bad_param}")
+        if self.fit_diagnostics.rejection_reason:
+            parts.append(self.fit_diagnostics.rejection_reason)
 
         return CheckResult("quality_check", passed, "; ".join(parts))
