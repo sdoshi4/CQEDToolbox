@@ -483,8 +483,8 @@ class ResonatorSpectroscopyVsGain(ProtocolOperation):
         self.figure_paths.clear()
 
         header = (f"## Resonator Spectroscopy vs Gain\n"
-                  f"Frequencies: {self.start_frequency():.3f}–{self.end_frequency():.3f} MHz, "
-                  f"Gains: {self.start_gain():.3f}–{self.end_gain():.3f}\n"
+                  f"Frequencies: {self.start_frequency():.3f}-{self.end_frequency():.3f} MHz, "
+                  f"Gains: {self.start_gain():.3f}-{self.end_gain():.3f}\n"
                   f"Data Path: `{self.data_loc}`\n\n")
         self.report_output.extend([
             header,

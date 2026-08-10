@@ -3,7 +3,9 @@ from pathlib import Path
 from instrumentserver import Client
 from labcore.protocols import select_platform
 from labcore.protocols.base import ProtocolBase, BranchBase
-from cqedtoolbox.protocols.operations import ResonatorSpectroscopy, ResonatorSpectroscopyVsGain, PiSpectroscopy, PowerRabi, ResonatorSpectroscopyAfterPi, ReadoutCalibration, SaturationSpectroscopy, T1Operation, T2EOperation, T2ROperation
+# from cqedtoolbox.protocols.operations import ResonatorSpectroscopy, ResonatorSpectroscopyVsGain, PiSpectroscopy, PowerRabi, ResonatorSpectroscopyAfterPi, ReadoutCalibration, SaturationSpectroscopy, T1Operation, T2EOperation, T2ROperation
+from operations.single_qubit.res_spec import ResonatorSpectroscopy
+
 import cqedtoolbox.instruments.qick.qick_sweep_v2 as qick_sweep_v2
 from cqedtoolbox.protocols.configs.qick_config import QickConfig
 from cqedtoolbox import setup_measurements

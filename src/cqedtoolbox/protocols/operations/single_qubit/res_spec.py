@@ -355,7 +355,7 @@ class ResonatorSpectroscopy(ProtocolOperation):
             # applied.  Resolving/averaging the *current* window has to come first,
             # otherwise a failed check immediately walks away from a resonator that
             # was only badly resolved.
-            [self._increase_sampling, self._increase_averaging, self._window_shift],
+            [self._window_shift, self._increase_sampling, self._increase_averaging],
         )
 
         self._register_success_update(
