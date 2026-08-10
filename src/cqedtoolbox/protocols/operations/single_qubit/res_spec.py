@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import lmfit
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.ndimage import median_filter
 import matplotlib.pyplot as plt
 
 from labcore.analysis import DatasetAnalysis, FitResult
@@ -439,14 +440,19 @@ class ResonatorSpectroscopy(ProtocolOperation):
         step = float(np.median(np.diff(frequencies)))
         span = float(frequencies[-1] - frequencies[0])
 
-        # Linear off-resonant baseline taken from the outer ~15% of the sweep, so
-        # the feature test below is insensitive to overall gain and to slopes in
-        # the transmission of the line.
         edge = max(3, n // 7)
         edge_idx = np.r_[np.arange(edge), np.arange(n - edge, n)]
-        base_coeff = np.polyfit(frequencies[edge_idx], magnitude[edge_idx], 1)
-        baseline = np.polyval(base_coeff, frequencies)
-        deviation = magnitude - baseline
+
+        # Off-resonant background.  A running median follows the cable/TWPA/
+        # standing-wave structure that curves the trace across the window, while
+        # staying far wider than a resonance, so a narrow dip survives it.  A
+        # straight line through the sweep edges is not enough: real traces are
+        # curved on the scale of the window, and that curvature on its own scores
+        # an SNR of ~30 on a resonator-free sweep.
+        background_width = int(np.clip(n // 8, 21, 201)) | 1
+        background = median_filter(magnitude, size=background_width, mode="nearest")
+        base_coeff = np.polyfit(frequencies, background, 1)
+        deviation = magnitude - background
 
         # Smooth the *signed* deviation so that noise averages towards zero.
         # Taking |.| before smoothing would rectify the noise into a positive
@@ -473,7 +479,9 @@ class ResonatorSpectroscopy(ProtocolOperation):
         kappa = max(kappa, 2 * step)
 
         f0_guess = float(frequencies[peak_index])
-        base_level = float(np.median(magnitude[edge_idx]))
+        # Off-resonant level *at* the resonance: the background is taken from a
+        # running median, so the dip itself does not drag this down.
+        base_level = float(background[peak_index])
         amplitude = max(base_level, np.finfo(float).eps)
         contrast = float(np.clip(feature_height / amplitude, 0.02, 0.9))
         q_l = f0_guess / kappa
