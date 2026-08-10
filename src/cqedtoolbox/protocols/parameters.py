@@ -954,6 +954,14 @@ class StartFlux(ProtocolParameterBase):
     def _dummy_setter(self, value):
         return self.params.flux.start(value)
 
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.scripts.res_spec_vs_flux.start_flux")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.scripts.res_spec_vs_flux.start_flux")(value)
+
 
 @dataclass
 class EndFlux(ProtocolParameterBase):
@@ -965,6 +973,14 @@ class EndFlux(ProtocolParameterBase):
 
     def _dummy_setter(self, value):
         return self.params.flux.end(value)
+
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.scripts.res_spec_vs_flux.end_flux")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.scripts.res_spec_vs_flux.end_flux")(value)
 
 
 @dataclass
@@ -978,6 +994,14 @@ class FluxSteps(ProtocolParameterBase):
     def _dummy_setter(self, value):
         return self.params.flux.steps(value)
 
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return int(nestedAttributeFromString(self.params, f"{active_qubit}.scripts.res_spec_vs_flux.steps")())
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.scripts.res_spec_vs_flux.steps")(int(value))
+
 
 @dataclass
 class ZeroFluxCurrent(ProtocolParameterBase):
@@ -989,6 +1013,14 @@ class ZeroFluxCurrent(ProtocolParameterBase):
 
     def _dummy_setter(self, value):
         return self.params.flux.zero_current(value)
+
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.flux.zero_current")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.flux.zero_current")(value)
 
 
 @dataclass
@@ -1016,6 +1048,14 @@ class ECParam(ProtocolParameterBase):
     def _dummy_setter(self, value):
         return self.params.qubit.EC(value)
 
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.qubit.EC")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.qubit.EC")(value)
+
 
 @dataclass
 class ELParam(ProtocolParameterBase):
@@ -1027,6 +1067,14 @@ class ELParam(ProtocolParameterBase):
 
     def _dummy_setter(self, value):
         return self.params.qubit.EL(value)
+
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.qubit.EL")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.qubit.EL")(value)
 
 
 @dataclass
@@ -1040,6 +1088,14 @@ class EJParam(ProtocolParameterBase):
     def _dummy_setter(self, value):
         return self.params.qubit.EJ(value)
 
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.qubit.EJ")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.qubit.EJ")(value)
+
 
 @dataclass
 class CouplingG(ProtocolParameterBase):
@@ -1052,6 +1108,14 @@ class CouplingG(ProtocolParameterBase):
     def _dummy_setter(self, value):
         return self.params.coupling.g(value)
 
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.qubit.g")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.qubit.g")(value)
+
 
 @dataclass
 class ResonatorFr(ProtocolParameterBase):
@@ -1063,3 +1127,13 @@ class ResonatorFr(ProtocolParameterBase):
 
     def _dummy_setter(self, value):
         return self.params.readout.fr(value)
+
+    # Stored as `bare_fr` to keep it clearly distinct from `readout.freq`, which
+    # is the dressed frequency the readout tone is actually driven at.
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.readout.bare_fr")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.readout.bare_fr")(value)
