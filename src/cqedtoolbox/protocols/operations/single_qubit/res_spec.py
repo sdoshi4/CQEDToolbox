@@ -355,7 +355,7 @@ class ResonatorSpectroscopy(ProtocolOperation):
             # applied.  Resolving/averaging the *current* window has to come first,
             # otherwise a failed check immediately walks away from a resonator that
             # was only badly resolved.
-            [self._window_shift, self._increase_sampling, self._increase_averaging],
+            [self._increase_averaging, self._window_shift, self._increase_sampling],
         )
 
         self._register_success_update(
@@ -440,23 +440,12 @@ class ResonatorSpectroscopy(ProtocolOperation):
         step = float(np.median(np.diff(frequencies)))
         span = float(frequencies[-1] - frequencies[0])
 
-        edge = max(3, n // 7)
-        edge_idx = np.r_[np.arange(edge), np.arange(n - edge, n)]
-
-        # Off-resonant background.  A running median follows the cable/TWPA/
-        # standing-wave structure that curves the trace across the window, while
-        # staying far wider than a resonance, so a narrow dip survives it.  A
-        # straight line through the sweep edges is not enough: real traces are
-        # curved on the scale of the window, and that curvature on its own scores
-        # an SNR of ~30 on a resonator-free sweep.
+        # Use a running median to subtract away large noise features while keeping your narrow resonator response
         background_width = int(np.clip(n // 8, 21, 201)) | 1
         background = median_filter(magnitude, size=background_width, mode="nearest")
-        base_coeff = np.polyfit(frequencies, background, 1)
         deviation = magnitude - background
 
-        # Smooth the *signed* deviation so that noise averages towards zero.
-        # Taking |.| before smoothing would rectify the noise into a positive
-        # floor of ~0.8 sigma and make the SNR below independent of averaging.
+        # Smooth the signed deviation so that noise averages towards zero
         smooth_width = 5
         smoothed = np.convolve(deviation, np.ones(smooth_width) / smooth_width, mode="same")
         point_noise = (1.4826 * np.median(np.abs(deviation - smoothed))
@@ -467,7 +456,6 @@ class ResonatorSpectroscopy(ProtocolOperation):
         feature_height = float(np.abs(smoothed[peak_index]))
         snr = feature_height / feature_noise if feature_noise > 0 else float("inf")
 
-        # Half-height width of the feature; doubles as the Q_l seed for the fit.
         half_height = feature_height / 2
         left = np.flatnonzero(np.abs(smoothed[:peak_index]) <= half_height)
         right = np.flatnonzero(np.abs(smoothed[peak_index + 1:]) <= half_height)
@@ -479,7 +467,7 @@ class ResonatorSpectroscopy(ProtocolOperation):
         kappa = max(kappa, 2 * step)
 
         f0_guess = float(frequencies[peak_index])
-        # Off-resonant level *at* the resonance: the background is taken from a
+        # Off-resonant level at the resonance: the background is taken from a
         # running median, so the dip itself does not drag this down.
         base_level = float(background[peak_index])
         amplitude = max(base_level, np.finfo(float).eps)
@@ -490,31 +478,23 @@ class ResonatorSpectroscopy(ProtocolOperation):
         q_min = f0_guess / span
         q_e_max = f0_guess / (2 * step)
 
+        # Add guesses and bounds on parameters based on the above analysis
         fit_params = {
             "A": lmfit.Parameter("A", value=amplitude, min=0.1 * amplitude, max=10 * amplitude),
             "f_0": lmfit.Parameter("f_0", value=f0_guess, min=frequencies[0], max=frequencies[-1]),
-            # Q_i only gets a generous physical ceiling: leaving it unbounded lets
-            # the optimizer run it to infinity, which is exactly the zero-depth
-            # spike a perfectly overcoupled hanger produces.  Q_e sets the
-            # observable width, so that is the one capped by the sampling.
             "Q_i": lmfit.Parameter("Q_i", value=float(np.clip(q_l / (1 - contrast), q_min, 1e6)),
                                    min=q_min, max=1e6),
+            # Q_e sets the observable width so is capped by our sampling.
             "Q_e_mag": lmfit.Parameter("Q_e_mag", value=float(np.clip(q_l / contrast, q_min, q_e_max)),
                                        min=q_min, max=q_e_max),
-            # |theta| < pi/2 keeps Q_c = Q_e_mag / cos(theta) positive while still
-            # allowing the circle rotation from an impedance mismatch.
+            # |theta| < pi/2 keeps Q_c = Q_e_mag / cos(theta) positive while still allowing the circle rotation from an impedance mismatch.
             "theta": lmfit.Parameter("theta", value=0.0, min=-np.pi / 2 + 0.05, max=np.pi / 2 - 0.05),
             "phase_offset": lmfit.Parameter("phase_offset",
-                                            value=float(np.angle(np.mean(signal_unwind[edge_idx]))),
+                                            value=float(np.angle(np.mean(signal_unwind))),
                                             min=-2 * np.pi, max=2 * np.pi),
-            # The bulk delay was already removed above, so only a small residual
-            # slope is expected here.
             "phase_slope": lmfit.Parameter("phase_slope", value=0.0,
-                                           min=-20 * np.pi / span, max=20 * np.pi / span),
-            "transmission_slope": lmfit.Parameter("transmission_slope",
-                                                  value=float(np.clip(base_coeff[0] * f0_guess / amplitude,
-                                                                      -500, 500)),
-                                                  min=-500, max=500),
+                                           min=-20 * np.pi / span, max=20 * np.pi / span), # shouldn't be much phase delay
+            "transmission_slope": lmfit.Parameter("transmission_slope", value=0, min=-500, max=500),
         }
 
         fit = HangerResponseBruno(frequencies, signal_unwind)
@@ -533,6 +513,7 @@ class ResonatorSpectroscopy(ProtocolOperation):
         else:
             linewidth = float("nan")
 
+        # ensure that the predicted/fitted resonator and linewidth are actually in the scan
         f_0 = float(params["f_0"].value)
         reasons = []
         if not contained:
@@ -626,7 +607,7 @@ class ResonatorSpectroscopy(ProtocolOperation):
         param = self.fit_result.params["f_0"]
         linewidth = self.fit_diagnostics.linewidth
         bad_param = None
-        # f_0 is an absolute frequency, so stderr/f_0 is ~1e-4 even for a useless
+        # f_0 is an absolute frequency, so stderr/f_0 (previous SNR calculation) is ~1e-4 even for a useless
         # fit.  The scale that decides whether we located the resonance is the
         # linewidth.
         if param.stderr is None:
