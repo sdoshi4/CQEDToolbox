@@ -65,7 +65,7 @@
   },
   "parameter_manager.corrections.res_spec.max_averaging_increases": {
     "unit": "",
-    "value": 2
+    "value": 1
   },
   "parameter_manager.corrections.res_spec.max_fit_param_error": {
     "unit": "",
@@ -85,7 +85,7 @@
   },
   "parameter_manager.corrections.res_spec.snr": {
     "unit": "",
-    "value": 2.0
+    "value": 20
   },
   "parameter_manager.corrections.res_spec_after_pi.detuning_threshold": {
     "unit": "Hz",
@@ -117,7 +117,7 @@
   },
   "parameter_manager.corrections.res_spec_vs_gain.snr": {
     "unit": "",
-    "value": 2.0
+    "value": 10
   },
   "parameter_manager.corrections.sat_spec.averaging_factor": {
     "unit": "",
@@ -281,7 +281,7 @@
   },
   "parameter_manager.q01.qubit.freq": {
     "unit": "MHz",
-    "value": 4710
+    "value": 4710.762988943675
   },
   "parameter_manager.q01.qubit.nqz": {
     "unit": "",
@@ -297,11 +297,11 @@
   },
   "parameter_manager.q01.readout.freq": {
     "unit": "MHz",
-    "value": 6463
+    "value": 6463.011988105046
   },
   "parameter_manager.q01.readout.gain": {
     "unit": "",
-    "value": 0.6
+    "value": 0.7999145455655252
   },
   "parameter_manager.q01.readout.len": {
     "unit": "us",
@@ -341,39 +341,39 @@
   },
   "parameter_manager.q01.scripts.res_spec.end_f": {
     "unit": "MHz",
-    "value": 7646.1
+    "value": 6468.011988105046
   },
   "parameter_manager.q01.scripts.res_spec.start_f": {
     "unit": "MHz",
-    "value": 7641.1
+    "value": 6458.011988105046
   },
   "parameter_manager.q01.scripts.res_spec.steps": {
     "unit": "",
-    "value": 160
+    "value": 100
   },
   "parameter_manager.q01.scripts.res_spec_vs_gain.end_g": {
     "unit": "",
-    "value": 0.03
+    "value": 0.8
   },
   "parameter_manager.q01.scripts.res_spec_vs_gain.start_g": {
     "unit": "",
-    "value": 0.001
+    "value": 0.2
   },
   "parameter_manager.q01.scripts.res_spec_vs_gain.steps": {
     "unit": "",
-    "value": 16
+    "value": 12
   },
   "parameter_manager.q01.scripts.sat_spec.end_f": {
     "unit": "MHz",
-    "value": 234.08568
+    "value": 4750
   },
   "parameter_manager.q01.scripts.sat_spec.start_f": {
     "unit": "MHz",
-    "value": 14.08568
+    "value": 4650
   },
   "parameter_manager.q01.scripts.sat_spec.steps": {
     "unit": "",
-    "value": 4400
+    "value": 200
   },
   "parameter_manager.q01.scripts.single_shot.steps": {
     "unit": "",
@@ -409,7 +409,7 @@
   },
   "parameter_manager.qick.default_reps": {
     "unit": "",
-    "value": 250
+    "value": 1000
   },
   "parameter_manager.qick.final_delay": {
     "unit": "us",

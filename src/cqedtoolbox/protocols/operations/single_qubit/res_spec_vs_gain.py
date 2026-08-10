@@ -24,7 +24,8 @@ from cqedtoolbox.protocols.parameters import (
     ReadoutLength, StartReadoutGain, EndReadoutGain, ResonatorSpecSteps, ResonatorSpecVsGainSteps,
     nestedAttributeFromString,
 )
-from cqedtoolbox.protocols.operations.single_qubit.res_spec import ResonatorSpectroscopy, SyntheticHangerResonatorData
+# from cqedtoolbox.protocols.operations.single_qubit.res_spec import ResonatorSpectroscopy, SyntheticHangerResonatorData
+from operations.single_qubit.res_spec import ResonatorSpectroscopy, SyntheticHangerResonatorData
 from cqedtoolbox.measurement_lib.opx.advanced.qubit_tuneup import measure_pulse_resonator_spec_vs_readout_amp
 from cqedtoolbox.measurement_lib.qick.single_transmon_v2 import FreqGainSweepProgram
 
@@ -348,7 +349,7 @@ class ResonatorSpectroscopyVsGain(ProtocolOperation):
                 trace_signal = self.dependents["signal"].T[i]  # Transpose to achieve gain as axis 0
                 freqs = self.independents["frequencies"].T[i]
 
-                folder_name = f"resonator_spec_vs_gain_i={i}_g={g}"
+                folder_name = f"resonator_spec_vs_gain_i={i}_g={g:.3f}"
 
                 # Use the static method from ResonatorSpectroscopy
                 ret = ResonatorSpectroscopy.add_mag_and_unwind_and_fit(

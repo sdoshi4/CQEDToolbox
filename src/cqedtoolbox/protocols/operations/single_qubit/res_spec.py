@@ -351,10 +351,6 @@ class ResonatorSpectroscopy(ProtocolOperation):
         self._register_check(
             "quality_check",
             self._check_quality,
-            # Order matters: labcore picks the first correction that can still be
-            # applied.  Resolving/averaging the *current* window has to come first,
-            # otherwise a failed check immediately walks away from a resonator that
-            # was only badly resolved.
             [self._increase_averaging, self._window_shift, self._increase_sampling],
         )
 
@@ -526,7 +522,7 @@ class ResonatorSpectroscopy(ProtocolOperation):
 
         fig, ax = plt.subplots()
         ax.set_title(fig_title)
-        ax.set_xlabel("Frequency (Hz)")
+        ax.set_xlabel("Frequency (MHz)")
         ax.set_ylabel("Magnitude Signal (A.U)")
         ax.plot(frequencies, magnitude, label="Data")
         ax.plot(frequencies, np.abs(fit_curve), label="Fit")

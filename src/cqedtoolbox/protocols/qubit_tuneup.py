@@ -5,6 +5,9 @@ from labcore.protocols import select_platform
 from labcore.protocols.base import ProtocolBase, BranchBase
 # from cqedtoolbox.protocols.operations import ResonatorSpectroscopy, ResonatorSpectroscopyVsGain, PiSpectroscopy, PowerRabi, ResonatorSpectroscopyAfterPi, ReadoutCalibration, SaturationSpectroscopy, T1Operation, T2EOperation, T2ROperation
 from operations.single_qubit.res_spec import ResonatorSpectroscopy
+from operations.single_qubit.res_spec_vs_gain import ResonatorSpectroscopyVsGain
+from operations.single_qubit.sat_spec import SaturationSpectroscopy
+from operations.fluxonium.res_spec_vs_flux import ResonatorSpectroscopyVsFlux
 
 import cqedtoolbox.instruments.qick.qick_sweep_v2 as qick_sweep_v2
 from cqedtoolbox.protocols.configs.qick_config import QickConfig
@@ -24,9 +27,12 @@ class QubitTuneup(ProtocolBase):
 
         self.root_branch = BranchBase("QubitTuneup")
         self.root_branch.extend([
-            ResonatorSpectroscopy(params),
+            # ResonatorSpectroscopy(params),
             # ResonatorSpectroscopyVsGain(params),
+            ResonatorSpectroscopyVsFlux(params)
             # SaturationSpectroscopy(params),
+
+
             # PowerRabi(params),
             # PiSpectroscopy(params),
             # ResonatorSpectroscopyAfterPi(params),
