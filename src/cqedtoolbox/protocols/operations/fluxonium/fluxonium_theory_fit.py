@@ -22,7 +22,7 @@ from parameters import (
     ECParam, ELParam, EJParam, ZeroFluxCurrent, HalfFluxCurrent,
     CouplingG, ResonatorFr,
 )
-from cqedtoolbox.fitfuncs.fluxonium_spectrum import FluxoniumResonatorFit
+from .fluxonium_spectrum import FluxoniumResonatorFit
 
 logger = logging.getLogger(__name__)
 

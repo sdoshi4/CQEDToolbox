@@ -121,7 +121,7 @@ class FluxOffsetInference(ProtocolOperation):
         try:
             # Imported here so that this module, and the operations package,
             # stay importable on machines without torch.
-            from cqedtoolbox.analysis.fluxonium_inverse_cnn import (
+            from .fluxonium_inverse_cnn import (
                 load_checkpoint, predict_from_checkpoint, offset_fraction_of,
             )
         except ImportError as exc:
