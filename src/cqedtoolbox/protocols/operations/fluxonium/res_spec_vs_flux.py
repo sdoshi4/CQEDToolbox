@@ -506,11 +506,12 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
 
         # Canonical layout for analyze(): flux (n_flux,), frequencies (n_freq,),
         # signal (n_flux, n_freq).  The board averages over reps itself, so there
-        # is no repetition axis here.
-        shape = (int(self.flux_steps()), int(self.steps()))
-        self.independents["flux"] = np.asarray(data["current"]["values"]).reshape(shape)[:, 0]
-        self.independents["frequencies"] = np.asarray(data["freq"]["values"]).reshape(shape)[0, :]
-        self.dependents["signal"] = np.asarray(data["signal"]["values"]).reshape(shape)
+        # is no repetition axis.  The outer pointer records one current per flux
+        # point, while freq/signal come back already gridded; the frequency axis
+        # is the same at every flux point, so take the first row.
+        self.independents["flux"] = np.asarray(data["current"]["values"])
+        self.independents["frequencies"] = np.asarray(data["freq"]["values"])[0, :]
+        self.dependents["signal"] = np.asarray(data["signal"]["values"])
 
     def _load_data_dummy(self):
         path = self.data_loc / "data.ddh5"
