@@ -62,17 +62,10 @@ qick_sweep_v2.config = conf
 setup_measurements.options.instrument_clients = {'instruments': instruments}
 setup_measurements.options.parameters = params
 
-# This is by Port
-
-# Flux bias current source. Opened once here and shared by every operation that
-# sweeps flux -- qcodes registers instruments by name, so a second one with the
-# same name would raise.
 currS = DMTCurrentSource("currSour", address="ASRL3::INSTR")
-
 FLUX_CHANNEL = "ch2"
-FLUX_RAMP_STEP = 0.125   # uA per step, walked rather than jumped
+FLUX_RAMP_STEP = 0.25   # uA per step, walked rather than jumped
 FLUX_RAMP_DELAY = 0.001  # s between steps
-
 
 def set_flux_current(value):
     """Ramp the flux bias to `value` (uA)."""

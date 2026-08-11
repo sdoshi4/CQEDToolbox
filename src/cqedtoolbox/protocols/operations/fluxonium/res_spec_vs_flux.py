@@ -17,7 +17,11 @@ from labcore.measurement.record import record_as, independent, dependent
 
 from labcore.protocols.base import (ProtocolOperation, OperationStatus,
                                     CorrectionParameter)
-from cqedtoolbox.protocols.parameters import (
+# from cqedtoolbox.protocols.parameters import (
+#     Repetition, ResonatorSpecSteps, StartReadoutFrequency, EndReadoutFrequency,
+#     StartFlux, EndFlux, FluxSteps,
+# )
+from parameters import (
     Repetition, ResonatorSpecSteps, StartReadoutFrequency, EndReadoutFrequency,
     StartFlux, EndFlux, FluxSteps,
 )
@@ -426,6 +430,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         currents = np.linspace(
             self.start_flux(), self.end_flux(), int(self.flux_steps())
         )
+        currents = np.round(currents / 0.125) * 0.125 # DMT is resolved to .125uA
 
         @pointer(independent("current", unit="uA"))
         def sweep_current():
