@@ -350,6 +350,12 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
     N_START_TRIALS = 200
     MIN_CROP_POINTS = 10
 
+    # Scale from this operation's native frequency units to GHz.  QICK reports
+    # absolute RF MHz.  Downstream operations convert with this rather than
+    # hardcoding a factor, so only the op that produced the numbers knows the
+    # instrument convention (an OPX path would override it to 1e-9).
+    FREQ_UNIT_TO_GHZ = 1e-3
+
 
     # True fake data params (may change to any)
     _SIM_QI = 8000.0
@@ -360,9 +366,12 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
     _SIM_TX_SLOPE = 5e-9  # /Hz
     _SIM_A = 1.0
     _SIM_PG = 0.9
-    _SIM_FR = 4.07            # mean dressed resonator frequency
-    _SIM_CHI = 0.02           # amplitude of the flux modulation of f_r
-    _SIM_GE_SPLITTING = 0.01  # separation of the |g> and |e> dips
+    # Same units as the measured frequency axis (MHz for QICK).  The CNN's first
+    # input channel is the raw absolute frequency in GHz, so a dummy curve at the
+    # wrong scale trains/tests it on nonsense -- keep this near the real device.
+    _SIM_FR = 6461.5          # mean dressed resonator frequency
+    _SIM_CHI = 20.0           # amplitude of the flux modulation of f_r
+    _SIM_GE_SPLITTING = 10.0  # separation of the |g> and |e> dips
     _SIM_NOISE_SIGMA = 0.2
     _SIM_EARTH_FLUX = 0.5     # flux offset the downstream model has to recover
 
@@ -411,6 +420,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         self.fr_good = None
         self.period_est = None
         self.crop_window = None
+        self.crop_span = None
         self.flux_crop = None
         self.fr_crop = None
         self.flux_resampled = None
@@ -540,6 +550,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         self.linewidths, self.rejection_reasons = [], []
         self.crop_error = None
         self.period_est = self.crop_window = self.npz_path = None
+        self.crop_span = None
         self.flux_crop = self.fr_crop = None
         self.flux_resampled = self.fr_resampled = None
 
@@ -661,6 +672,11 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             self.crop_window = (x_min, x_max)
             self.flux_crop, self.fr_crop = flux_crop, fr_crop
             self.flux_resampled, self.fr_resampled = flux_resampled, fr_resampled
+            # Span actually covered by the resampled grid.  _resample_one_period
+            # spans the nearest *measured* points inside the window, so this is
+            # shorter than x_max - x_min by up to one sample gap.  Downstream
+            # offset->current conversion must use this, not the window width.
+            self.crop_span = float(flux_crop.max() - flux_crop.min())
 
             ds.add(
                 crop_x_min=float(x_min),
@@ -741,7 +757,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         """
 
         if not self.snr or len(self.snr) == 0:
-            self.report_output = ["No SNR computed. Did analyze() run?"]
+            self.report_output.append("No SNR computed. Did analyze() run?")
             logger.warning("No SNR computed. Did analyze() run?")
             return EvaluateResult(
                 OperationStatus.FAILURE,
@@ -779,7 +795,10 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             msg += f"Resampled curve for CNN: {self.N_CNN} points -> `{self.npz_path}`\n"
         else:
             msg += f"**No CNN input produced:** {self.crop_error}\n"
-        self.report_output = [msg]
+        # Append, never assign: execute() puts the "### ATTEMPT n" marker in here
+        # before measure(), and correct() adds figures after, so overwriting
+        # would discard the previous attempt's whole section on a retry.
+        self.report_output.append(msg)
 
         checks = [
             CheckResult(

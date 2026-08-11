@@ -1024,6 +1024,26 @@ class ZeroFluxCurrent(ProtocolParameterBase):
 
 
 @dataclass
+class HalfFluxCurrent(ProtocolParameterBase):
+    name: str = field(default="half_flux_current", init=False)
+    description: str = field(default="Current value corresponding to half flux quantum", init=False)
+
+    def _dummy_getter(self):
+        return self.params.flux.half_current()
+
+    def _dummy_setter(self, value):
+        return self.params.flux.half_current(value)
+
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.flux.half_current")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.flux.half_current")(value)
+
+
+@dataclass
 class GainPulseDuration(ProtocolParameterBase):
     name: str = field(default="rabi_pulse_duration", init=False)
     description: str = field(default="Longest duration of applying the Rabi pulse", init=False)

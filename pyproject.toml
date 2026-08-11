@@ -50,6 +50,18 @@ dev = [
     "mypy>=1.11.0",
     "pre-commit>=3.5.0",
 ]
+# Optional, not base dependencies: torch is large and the fluxonium analysis is
+# not needed to run a measurement. The modules that use them import lazily, so
+# the package stays importable without either.
+ml = [
+    "torch>=2.0",
+]
+theory = [
+    "scqubits>=4.0",
+]
+fluxonium = [
+    "cqedtoolbox[ml,theory]",
+]
 
 [project.urls]
 Homepage = "https://github.com/toolsforexperiments/CQEDToolbox"

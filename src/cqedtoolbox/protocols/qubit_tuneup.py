@@ -8,6 +8,8 @@ from operations.single_qubit.res_spec import ResonatorSpectroscopy
 from operations.single_qubit.res_spec_vs_gain import ResonatorSpectroscopyVsGain
 from operations.single_qubit.sat_spec import SaturationSpectroscopy
 from operations.fluxonium.res_spec_vs_flux import ResonatorSpectroscopyVsFlux
+from operations.fluxonium.flux_offset_inference import FluxOffsetInference
+from operations.fluxonium.fluxonium_theory_fit import FluxoniumResonatorTheoryFit
 
 import cqedtoolbox.instruments.qick.qick_sweep_v2 as qick_sweep_v2
 from cqedtoolbox.protocols.configs.qick_config import QickConfig
@@ -23,14 +25,24 @@ select_platform("QICK")
 
 class QubitTuneup(ProtocolBase):
 
-    def __init__(self, params, set_flux_current=None, report_path: Path = Path(".")):
+    def __init__(self, params, set_flux_current=None, cnn_checkpoint=None,
+                 report_path: Path = Path(".")):
         super().__init__(report_path)
+
+        # The two analysis operations consume what the flux sweep produced, so
+        # they are handed the instance rather than re-reading it from disk.
+        res_spec_vs_flux = ResonatorSpectroscopyVsFlux(
+            params, set_flux_current=set_flux_current
+        )
 
         self.root_branch = BranchBase("QubitTuneup")
         self.root_branch.extend([
             # ResonatorSpectroscopy(params),
             # ResonatorSpectroscopyVsGain(params),
-            ResonatorSpectroscopyVsFlux(params, set_flux_current=set_flux_current)
+            res_spec_vs_flux,
+            FluxOffsetInference(params, source=res_spec_vs_flux,
+                                checkpoint_path=cnn_checkpoint),
+            FluxoniumResonatorTheoryFit(params, source=res_spec_vs_flux),
             # SaturationSpectroscopy(params),
 
 
@@ -74,4 +86,11 @@ def set_flux_current(value):
     )
 
 
-QubitTuneup(params, set_flux_current=set_flux_current).execute()
+# Trained offset-inverse CNN. Produced by the Fluxonium-offset-inverse-model
+# repo; FluxOffsetInference fails cleanly if this is missing.
+CNN_CHECKPOINT = "fluxonium_inverse_cnn_better.pt"
+
+
+QubitTuneup(params,
+            set_flux_current=set_flux_current,
+            cnn_checkpoint=CNN_CHECKPOINT).execute()

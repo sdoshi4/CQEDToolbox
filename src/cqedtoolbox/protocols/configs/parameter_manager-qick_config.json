@@ -3,6 +3,10 @@
     "unit": "",
     "value": "q01"
   },
+  "parameter_manager.corrections.fluxonium_theory_fit.max_rms_mhz": {
+    "unit": "MHz",
+    "value": 1.0
+  },
   "parameter_manager.corrections.pi_spec.averaging_factor": {
     "unit": "",
     "value": 2.0
@@ -234,6 +238,10 @@
   "parameter_manager.corrections.t2r.snr_min": {
     "unit": "",
     "value": 2.0
+  },
+  "parameter_manager.q01.flux.half_current": {
+    "unit": "uA",
+    "value": 0.0
   },
   "parameter_manager.q01.flux.zero_current": {
     "unit": "uA",
