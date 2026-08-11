@@ -800,3 +800,20 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
                 logger.warning(f"{check.name}: {check.description}")
         return EvaluateResult(status, checks)
 
+    def correct(self, result: EvaluateResult) -> EvaluateResult:
+        """Put every figure in the report, each with a caption.
+
+        The base implementation appends only ``figure_paths[-1]``, so as soon as
+        the crop succeeds and later plots exist, the raw flux sweep and the crop
+        overlay are dropped -- and the raw sweep is the one worth looking at.
+        """
+        captions = ["**Flux sweep:**", "**One-period crop:**", "**Period selection:**"]
+        figures = list(self.figure_paths)
+        # Cleared so the base class does not append the last figure a second time.
+        self.figure_paths.clear()
+        for i, path in enumerate(figures):
+            caption = captions[i] if i < len(captions) else f"**Figure {i + 1}:**"
+            self.report_output.extend([f"\n{caption}\n", path.resolve()])
+
+        return super().correct(result)
+
