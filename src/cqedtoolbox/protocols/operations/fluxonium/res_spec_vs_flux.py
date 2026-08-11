@@ -1,31 +1,72 @@
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Any
 
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
-from scipy.sparse import diags, kron, identity, csc_matrix
-from scipy.sparse.linalg import eigsh
 
 plt.switch_backend("agg")
 
 from labcore.data.datadict_storage import datadict_from_hdf5
 from labcore.analysis import DatasetAnalysis
 from labcore.analysis.fit import Fit
-from labcore.measurement.sweep import sweep_parameter
+from labcore.measurement.sweep import sweep_parameter, Sweep, pointer
 from labcore.measurement.storage import run_and_save_sweep
 from labcore.measurement.record import record_as, independent, dependent
 
-from labcore.protocols.base import ProtocolOperation, OperationStatus
+from labcore.protocols.base import (ProtocolOperation, OperationStatus,
+                                    CorrectionParameter)
 from cqedtoolbox.protocols.parameters import (
     Repetition, ResonatorSpecSteps, StartReadoutFrequency, EndReadoutFrequency,
-    StartFlux, EndFlux, FluxSteps, ZeroFluxCurrent, ECParam, ELParam, EJParam, CouplingG, ResonatorFr,
+    StartFlux, EndFlux, FluxSteps,
 )
-from cqedtoolbox.protocols.operations.single_qubit.res_spec import UnwindAndFitRet
-from cqedtoolbox.fitfuncs.resonators import moving_average, HangerResponseBruno
+# Relative: must resolve to the res_spec next to this package, not to whichever
+# cqedtoolbox is installed in the environment.
+from ..single_qubit.res_spec import ResonatorSpectroscopy
+from cqedtoolbox.measurement_lib.qick.single_transmon_v2 import FreqSweepProgram
+from cqedtoolbox.fitfuncs.resonators import moving_average
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ResSpecVsFluxSNRThreshold(CorrectionParameter):
+    name: str = field(default="res_spec_vs_flux_snr_threshold", init=False)
+    description: str = field(default="Per-flux-point SNR threshold", init=False)
+
+    def _qick_getter(self):
+        return self.params.corrections.res_spec_vs_flux.snr()
+
+    def _qick_setter(self, v):
+        self.params.corrections.res_spec_vs_flux.snr(v)
+
+    def _opx_getter(self):
+        return self.params.corrections.res_spec_vs_flux.snr()
+
+    def _opx_setter(self, v):
+        self.params.corrections.res_spec_vs_flux.snr(v)
+
+
+@dataclass
+class ResSpecVsFluxMinGoodFraction(CorrectionParameter):
+    name: str = field(default="res_spec_vs_flux_min_good_fraction", init=False)
+    description: str = field(
+        default="Minimum fraction of flux points that must clear the SNR threshold",
+        init=False,
+    )
+
+    def _qick_getter(self):
+        return self.params.corrections.res_spec_vs_flux.min_good_fraction()
+
+    def _qick_setter(self, v):
+        self.params.corrections.res_spec_vs_flux.min_good_fraction(v)
+
+    def _opx_getter(self):
+        return self.params.corrections.res_spec_vs_flux.min_good_fraction()
+
+    def _opx_setter(self, v):
+        self.params.corrections.res_spec_vs_flux.min_good_fraction(v)
 
 
 class DoubleHangerResponseBruno(Fit):
@@ -128,211 +169,183 @@ class DoubleHangerResponseBruno(Fit):
         )
 
 
-def add_mag_and_unwind_and_choose_fit(frequencies, signal_raw, model_choice) -> UnwindAndFitRet:
-    phase_unwrap = np.unwrap(np.angle(signal_raw))
-    phase_slope = np.polyfit(frequencies, phase_unwrap, 1)[0]
-    signal_unwind = signal_raw * np.exp(-1j * frequencies * phase_slope)
-    magnitude = np.abs(signal_raw)
-    phase = np.arctan2(signal_unwind.imag, signal_unwind.real)
-    if model_choice == "single":
-        fit = HangerResponseBruno(frequencies, signal_unwind)
-    else:
-        fit = DoubleHangerResponseBruno(frequencies, signal_unwind)
-    fit_result = fit.run(fit)
-    fit_curve = fit_result.eval()
-    residuals = signal_unwind - fit_curve
-    amp = fit_result.params["A"].value
-    noise = np.std(residuals)
-    snr = np.abs(amp / (4 * noise))
+def _running_median(x, window=21):
+    """Local median of x over a centred window, ignoring NaNs."""
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    half = window // 2
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        segment = x[lo:hi]
+        out[i] = np.nanmedian(segment) if np.any(np.isfinite(segment)) else np.nan
+    return out
 
-    ret = UnwindAndFitRet(
-        signal_unwind=signal_unwind,
-        magnitude=magnitude,
-        phase=phase,
-        fit_curve=fit_curve,
-        fit_result=fit_result,
-        residuals=residuals,
-        snr=snr,
-        fig=None,
-        ax=None,
+
+def _robust_filter_fitted_curve(flux_axis, fr_fit, snr_list, freq_axis,
+                                snr_threshold=2.0, median_window=21,
+                                abs_dev_threshold=None, mad_multiplier=6.0):
+    """Keep the fitted points that are trustworthy.
+
+    Three cuts: finite and above the SNR threshold, inside the swept frequency
+    range (plus a 5% margin), and within a MAD-scaled distance of a local median
+    of the curve.  The last one removes single-point fit failures that survive
+    the SNR cut but jump far off the smooth f_r(flux) trend.
+    """
+    flux_axis = np.asarray(flux_axis, dtype=float)
+    fr_fit = np.asarray(fr_fit, dtype=float)
+    snr_list = np.asarray(snr_list, dtype=float)
+    freq_axis = np.asarray(freq_axis, dtype=float)
+
+    basic_mask = (
+        np.isfinite(flux_axis)
+        & np.isfinite(fr_fit)
+        & np.isfinite(snr_list)
+        & (snr_list >= snr_threshold)
     )
-    return ret
+    fmin, fmax = float(np.min(freq_axis)), float(np.max(freq_axis))
+    margin = 0.05 * (fmax - fmin)
+    range_mask = (fr_fit >= fmin - margin) & (fr_fit <= fmax + margin)
+    mask1 = basic_mask & range_mask
+
+    fr_tmp = fr_fit.copy()
+    fr_tmp[~mask1] = np.nan
+    local_med = _running_median(fr_tmp, window=median_window)
+    dev = np.abs(fr_fit - local_med)
+
+    mad = np.nanmedian(np.abs(fr_tmp - local_med))
+    if not np.isfinite(mad) or mad < 1e-12:
+        mad = 1e-12
+    if abs_dev_threshold is None:
+        abs_dev_threshold = mad_multiplier * mad
+
+    final_mask = mask1 & (dev <= abs_dev_threshold)
+    logger.info(
+        f"Filter summary: total={len(fr_fit)}, pass basic={int(np.sum(mask1))}, "
+        f"pass local-median={int(np.sum(final_mask))}, MAD={mad:.6g}, "
+        f"abs_dev_threshold={abs_dev_threshold:.6g}"
+    )
+    return final_mask, local_med, dev
 
 
-def _count_dips_fast(sig_raw) -> int:
-    """Fast estimate of the count of dips for signal at a specific flux"""
-    
-    magnitude = np.abs(sig_raw)
-    win = max(5, len(magnitude) // 200)
-    mag_s = np.convolve(magnitude, np.ones(win) / win, mode="same")
-    peaks, _ = find_peaks(-mag_s, prominence = 0.15 * np.ptp(mag_s), distance = max(5, len(magnitude) // 150))
-    return int(len(peaks))
+def _infer_period_from_curve(flux_good, fr_good, n_uniform=2000):
+    """Estimate one flux period from the filtered f_r(flux) curve.
 
-
-def _decide_model(sig_raw, sample_every: int = 10, frac_single_threshold: float = 0.70) -> str:
-    """Decide to use single hanger fit if count of dips <= 1 for >= 75% of flux points (we assume fr_g and fr_e are indistinguishable,
-    or fr_e not in range of frequencies scanned in this case), otherwise will use double notch fit"""
-    
-    idx = np.arange(0, len(sig_raw), sample_every)
-    counts = np.array([_count_dips_fast(sig_raw[i]) for i in idx])
-    return "single" if np.mean(counts <= 1) >= frac_single_threshold else "double"
-
-
-def _fluxonium_basis(EC, EL, EJ, flux_ext, levels=8, grid=2000, flux_max=12*np.pi):
-    """Creat Fluxonium Hamiltonian, return (E, n_Q projected into eigenbasis) using FD in phase."""
-    
-    flux = np.linspace(-flux_max, flux_max, grid)
-    dflux = flux[1] - flux[0]
-    main, off = 2.0*np.ones(grid), -1.0*np.ones(grid-1)
-    lap = diags([off, main, off], offsets=[-1, 0, 1]) / (dflux**2)
-    T = -4.0 * EC * lap
-    V = 0.5*EL*(flux**2) - EJ*np.cos(flux-flux_ext)
-    H = T + diags(V, 0)
-
-    evals, evecs = eigsh(H, k=levels, which="SA")
-    idx = np.argsort(evals)
-    E = np.array(evals[idx])
-    Psi = np.array(evecs[:, idx])
-
-    offp =  np.ones(grid-1) / (2.0 * dflux)
-    offm = -np.ones(grid-1) / (2.0 * dflux)
-    d1 = diags([offm, np.zeros(grid), offp], [-1, 0, 1], dtype=np.complex128)
-    n_grid = (-1j) * d1
-    nQ = Psi.conj().T @ (n_grid @ Psi)
-    return E, nQ
-
-
-def _resonator_ops_from_fr(fr_bare, N_phot=6):
-    """Creat Resonator Hamiltonian, return H_res (GHz), n_R = i(a†-a), N = a†a in N_phot Fock basis."""
-    
-    a = np.zeros((N_phot, N_phot), dtype=complex)
-    for n in range(1, N_phot):
-        a[n-1, n] = np.sqrt(n)
-    adag = a.conj().T
-    Hres = fr_bare * (adag @ a + 0.5 * np.eye(N_phot))
-    nR = 1j * (adag - a)
-    Nph = adag @ a
-    return csc_matrix(Hres), csc_matrix(nR), csc_matrix(Nph)
-
-
-def _build_total_H(EC, EL, EJ, flux_ext, fr_bare, g, q_levels=8, N_phot=6, grid=2000, flux_max=12*np.pi):
-    EQ, nQ = _fluxonium_basis(EC, EL, EJ, flux_ext, levels=q_levels, grid=grid, flux_max=flux_max)
-    Hq = diags(EQ, 0, format='csc')
-    Iq = identity(q_levels, format='csc')
-    Hres, nR, Nph = _resonator_ops_from_fr(fr_bare, N_phot=N_phot)
-    Ir = identity(N_phot, format='csc')
-    Hint = g * kron(csc_matrix(nQ), nR)
-    Htot = kron(Hq, Ir) + kron(Iq, Hres) + Hint
-    return Htot, Nph, q_levels, N_phot
-
-
-def _pick_state(E, V, Pg_full, Pe_full, Nph_full, manifold, n_target):
-    """Select the eigenstate closest to |manifold, n_target>, since they might not be lowest 4 eigenstates.
-    For g/e state of qubit, expection value of P_g/P_e projector should close to 1. For 0/1 state of resonator expectation of N operator should close to 0/1"""
-    
-    P = Pg_full if manifold == "g" else Pe_full
-    best_E = None
-    best_score = np.inf
-    for j in range(E.size):
-        v = V[:, j]
-        p = float(np.real_if_close(v.conj().T @ (P @ v)))
-        nbar = float(np.real_if_close(v.conj().T @ (Nph_full @ v)))
-        score = (1.0 - p) + abs(nbar - n_target)
-        if score < best_score:
-            best_score = score
-            best_E = E[j]
-    return best_E
-
-
-def _readout_frequencies(EC, EL, EJ, flux_ext, fr, g, q_levels=10, N_phot=6, grid=2000, flux_max=12*np.pi):
-    """Simulate frequencies fr_g and fr_e of specific flux point"""
-    
-    Htot, Nph, Lq, Nr = _build_total_H(EC, EL, EJ, flux_ext, fr, g, q_levels=q_levels,
-        N_phot=N_phot, grid=grid, flux_max=flux_max)
-    k_eval = min(4 * Lq, Htot.shape[0] - 2) # Make sure to include g0, g1, e0, e1
-    evals, evecs = eigsh(Htot, k=k_eval, which="SA")
-    idx = np.argsort(evals)
-    E = evals[idx]
-    V = evecs[:, idx]
-
-    Pg = np.zeros((Lq, Lq))
-    Pg[0, 0] = 1.0
-    Pe = np.zeros((Lq, Lq))
-    Pe[1, 1] = 1.0
-    Pg_full = kron(csc_matrix(Pg), identity(Nr, format="csc"))
-    Pe_full = kron(csc_matrix(Pe), identity(Nr, format="csc"))
-    Nph_full = kron(identity(Lq, format="csc"), Nph)
-
-    Eg0 = _pick_state(E, V, Pg_full, Pe_full, Nph_full, manifold="g", n_target=0)
-    Eg1 = _pick_state(E, V, Pg_full, Pe_full, Nph_full, manifold="g", n_target=1)
-    Ee0 = _pick_state(E, V, Pg_full, Pe_full, Nph_full, manifold="e", n_target=0)
-    Ee1 = _pick_state(E, V, Pg_full, Pe_full, Nph_full, manifold="e", n_target=1)
-    fr_g = Eg1 - Eg0
-    fr_e = Ee1 - Ee0
-    return fr_g, fr_e
-
-
-def _estimate_current_period(currents, fr_g, min_period_fraction=0.80, max_period_fraction=1.05):
+    Detrends, resamples onto a uniform grid, and takes the autocorrelation peak.
+    The search is restricted to lags between a quarter and 95% of the measured
+    width so that small wiggles cannot masquerade as the period.
     """
-    Estimate the period in the sweep variable (current or flux) from f_r_g, using fft autocorrelation.
-    Assumesthe sweep spans of order ~1 period of the main oscillation.
+    flux_good = np.asarray(flux_good, dtype=float)
+    fr_good = np.asarray(fr_good, dtype=float)
+    order = np.argsort(flux_good)
+    x, y = flux_good[order], fr_good[order]
+
+    x_min, x_max = float(x.min()), float(x.max())
+    width = x_max - x_min
+    xu = np.linspace(x_min, x_max, n_uniform)
+    yu = np.interp(xu, x, y)
+    yu0 = yu - np.polyval(np.polyfit(xu, yu, 1), xu)
+    yu0 = yu0 - np.mean(yu0)
+
+    n = len(yu0)
+    fft = np.fft.rfft(yu0, n=2 * n)
+    ac = np.fft.irfft(fft * np.conj(fft))[:n]
+    ac = ac / ac[0]
+    lags = np.arange(n) * (xu[1] - xu[0])
+
+    search = (lags >= width / 4.0) & (lags <= width * 0.95)
+    if not np.any(search):
+        raise ValueError("No valid period range found in the measured flux span.")
+    period_est = float(lags[search][int(np.argmax(ac[search]))])
+    logger.info(
+        f"Auto period estimate: width={width:.6g}, period={period_est:.6g}, "
+        f"approx periods={width / period_est:.3f}"
+    )
+    return period_est, lags, ac
+
+
+def _score_one_period_window(flux_good, fr_good, x0, x1, n_points=121):
+    """Score a candidate one-period window; lower is better.
+
+    Prefers windows with enough points, no large gaps, full coverage, and a
+    smooth curve after interpolation.  Gaps and missing coverage are weighted
+    enormously so they dominate any roughness difference.
     """
+    mask = (flux_good >= x0) & (flux_good <= x1)
+    fx, fy = flux_good[mask], fr_good[mask]
+    if len(fx) < 30:
+        return np.inf
+    order = np.argsort(fx)
+    fx, fy = fx[order], fy[order]
 
-    n = len(currents)
-    y = fr_g - np.nanmean(fr_g)
-    y = np.nan_to_num(y, nan=0.0)
-    nfft = 1 << ((2 * n - 1).bit_length())
-    fft = np.fft.rfft(y, nfft)
-    ac = np.fft.irfft(fft * np.conj(fft))[:n].real
-    ac /= ac[0]
-    dI = float(np.mean(np.diff(currents)))
-    span = float(currents[-1] - currents[0])
-    lags = np.arange(n, dtype=float) * dI
-    min_T = min_period_fraction * span
-    max_T = max_period_fraction * span
-    mask = (lags >= min_T) & (lags <= max_T)
-    if not np.any(mask):
-        return span
-    ac_win = ac[mask]
-    lag_win = lags[mask]
-    if ac_win.size < 3:
-        return span
-    interior = (ac_win[1:-1] > ac_win[:-2]) & (ac_win[1:-1] >= ac_win[2:])
-    peak_indices = np.where(interior)[0] + 1
-    if peak_indices.size == 0:
-        return span
-    best_idx = peak_indices[np.argmax(ac_win[peak_indices])]
-    period_est = lag_win[best_idx]
-    return period_est
+    width = x1 - x0
+    if width <= 0:
+        return np.inf
+    gaps = np.diff(fx)
+    max_gap = np.max(gaps) if len(gaps) else np.inf
+    gap_score = max_gap / width
+    coverage_penalty = abs(1.0 - (fx.max() - fx.min()) / width)
+
+    x_new = np.linspace(fx.min(), fx.max(), n_points, endpoint=False)
+    y_new = np.interp(x_new, fx, fy)
+    roughness = np.std(np.diff(y_new, n=2))
+    return roughness + 1e7 * gap_score + 1e7 * coverage_penalty
 
 
-def _zero_flux_point(EC, EL, EJ, fr_bare, g, flux_vals, fr_g_exp):
-    """Assume in experiment, we already know accurate qubit params for fr_bare, g(coupling strength), EC, EL.
-    Use an estimation of EJ(+-10%) and input it to give a structure of fr_g vs flux. Then, scan a constant flux shift and pick
-    the one that best matches experiment. """
+def _auto_pick_one_period_window(flux_good, fr_good, n_points=121, n_start_trials=200):
+    """Infer the period, then slide a window of that width and keep the best."""
+    flux_good = np.asarray(flux_good, dtype=float)
+    fr_good = np.asarray(fr_good, dtype=float)
+    order = np.argsort(flux_good)
+    flux_good, fr_good = flux_good[order], fr_good[order]
 
-    fr_g_thr = []
-    for phi in flux_vals:
-        fr_g, _ = _readout_frequencies(EC, EL, EJ, phi, fr_bare, g)
-        fr_g_thr.append(fr_g)
-    fr_g_thr = np.asarray(fr_g_thr, dtype=float)
-    fr_g_exp = np.asarray(fr_g_exp, dtype=float)
-    dphi = float(flux_vals[1] - flux_vals[0])
-    thr0 = fr_g_thr - fr_g_thr.mean()
-    exp0 = fr_g_exp - fr_g_exp.mean()
-    F_thr = np.fft.fft(thr0)
-    F_exp = np.fft.fft(exp0)
-    corr = np.fft.ifft(F_thr * np.conj(F_exp)).real
-    best_k = int(np.argmax(corr))
-    shift_flux = best_k * dphi
-    zero_flux = -shift_flux
-    zero_flux_wrapped = zero_flux % 2*np.pi
-    return zero_flux_wrapped
+    period_est, lags, ac = _infer_period_from_curve(flux_good, fr_good)
+    data_min, data_max = float(flux_good.min()), float(flux_good.max())
+    if data_max - data_min < period_est:
+        raise ValueError("Data span is smaller than one inferred period.")
+
+    starts = np.linspace(data_min, data_max - period_est, n_start_trials)
+    scores = np.asarray([
+        _score_one_period_window(flux_good, fr_good, x0, x0 + period_est, n_points=n_points)
+        for x0 in starts
+    ])
+    if not np.any(np.isfinite(scores)):
+        raise ValueError("No candidate one-period window had enough fitted points.")
+
+    best = int(np.nanargmin(scores))
+    x_min = float(starts[best])
+    x_max = float(x_min + period_est)
+    logger.info(f"Auto-selected crop: [{x_min:.6g}, {x_max:.6g}], score={scores[best]:.6g}")
+    return x_min, x_max, period_est, starts, scores, lags, ac
+
+
+def _resample_one_period(flux_seg, fr_seg, n_points=121):
+    """Interpolate the cropped period onto the uniform grid the CNN expects."""
+    flux_seg = np.asarray(flux_seg, dtype=float)
+    fr_seg = np.asarray(fr_seg, dtype=float)
+    order = np.argsort(flux_seg)
+    flux_seg, fr_seg = flux_seg[order], fr_seg[order]
+
+    x_new = np.linspace(flux_seg.min(), flux_seg.max(), n_points, endpoint=False)
+    y_new = np.interp(x_new, flux_seg, fr_seg)
+    return x_new, y_new
 
 
 class ResonatorSpectroscopyVsFlux(ProtocolOperation):
 
-    SNR_THRESHOLD = 2.5
+    # --- analysis-only knobs ---
+    # These shape the preprocessing but are not pass/fail criteria, so they stay
+    # here rather than in the parameter manager.  The SNR threshold and the
+    # minimum good fraction *are* check criteria and live there instead.
+    # Outlier rejection of the fitted curve.
+    MEDIAN_WINDOW = 16
+    MAD_MULTIPLIER = 20.0
+    # Must match the flux grid the CNN was trained on.
+    N_CNN = 121
+    N_START_TRIALS = 200
+    MIN_CROP_POINTS = 10
+
 
     # True fake data params (may change to any)
     _SIM_QI = 8000.0
@@ -343,17 +356,20 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
     _SIM_TX_SLOPE = 5e-9  # /Hz
     _SIM_A = 1.0
     _SIM_PG = 0.9
-    _SIM_EC = 1.0  # followings are params for fluxonium
-    _SIM_EL = 0.5
-    _SIM_EJ = 5.3
-    _SIM_FR = 4.07
-    _SIM_G = 0.067
+    _SIM_FR = 4.07            # mean dressed resonator frequency
+    _SIM_CHI = 0.02           # amplitude of the flux modulation of f_r
+    _SIM_GE_SPLITTING = 0.01  # separation of the |g> and |e> dips
     _SIM_NOISE_SIGMA = 0.2
-    _SIM_EARTH_FLUX = 0.5
+    _SIM_EARTH_FLUX = 0.5     # flux offset the downstream model has to recover
 
-    def __init__(self, params):
+    def __init__(self, params, set_flux_current=None):
         super().__init__()
-    
+
+        # Callable applying one flux bias set point.  Injected so that the
+        # instrument, its channel and how it is ramped all stay in the setup
+        # script; this operation only picks the set points and sweeps them.
+        self.set_flux_current = set_flux_current
+
         self._register_inputs(
             repetitions=Repetition(params),
             steps=ResonatorSpecSteps(params),
@@ -362,30 +378,69 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             start_flux=StartFlux(params),
             end_flux=EndFlux(params),
             flux_steps=FluxSteps(params),
-            EC=ECParam(params),
-            EL=ELParam(params),
-            EJ=EJParam(params),
-            g=CouplingG(params),
-            fr=ResonatorFr(params),
         )
-        self._register_outputs(
-            zero_flux_current=ZeroFluxCurrent(params)
+        # No output parameters: this operation produces the measured f_r(flux)
+        # curve as saved data.  The zero/half flux point is inferred downstream
+        # by the offset-inverse ML model, which owns the fluxonium/resonator
+        # theory and the parameter uncertainty that comes with it.
+
+        self._register_correction_params(
+            snr_threshold=ResSpecVsFluxSNRThreshold(params),
+            min_good_fraction=ResSpecVsFluxMinGoodFraction(params),
         )
 
-        self.condition = f"Success if every trace has SNR ≥ {self.SNR_THRESHOLD}"
+        self.condition = ("Success if enough flux points clear the SNR threshold "
+                          "and a one-period curve was resampled for the CNN")
         self.independents = {"frequencies": [], "flux": []}
         self.dependents = {"signal": []}
         self.data_loc = None
-        self.model_choice = None
-        self.fr_g = []
-        self.fr_e = []
+        self.fr_fit = []
         self.fit_results = []
-        self.pg = []
         self.snr = []
+        self.linewidths = []
+        self.rejection_reasons = []
         self.figure_paths = []
-        self.symmetry_score = None
-        self.zero_slope = None
 
+        # Filled by analyze(): the preprocessed curve handed to the CNN.
+        self.good_mask = None
+        self.flux_good = None
+        self.fr_good = None
+        self.period_est = None
+        self.crop_window = None
+        self.flux_crop = None
+        self.fr_crop = None
+        self.flux_resampled = None
+        self.fr_resampled = None
+        self.npz_path = None
+
+
+    def _measure_qick(self) -> Path:
+        logger.info("Starting qick resonator spectroscopy vs flux measurement")
+
+        if self.set_flux_current is None:
+            raise RuntimeError(
+                "No flux current setter was supplied. Construct this operation "
+                "with set_flux_current=<callable> so it can move the flux bias."
+            )
+
+        currents = np.linspace(
+            self.start_flux(), self.end_flux(), int(self.flux_steps())
+        )
+
+        @pointer(independent("current", unit="uA"))
+        def sweep_current():
+            for value in currents:
+                logger.debug(f"Setting flux current to {value} uA")
+                self.set_flux_current(float(value))
+                yield {"current": float(value)}
+
+        # One full frequency sweep at each current set point.
+        sweep = Sweep(sweep_current) @ FreqSweepProgram()
+        logger.debug("Sweep created, running measurement")
+        loc, da = run_and_save_sweep(sweep, "data", self.name)
+        logger.info("Measurement complete")
+
+        return loc
 
     def _measure_dummy(self) -> Path:
         """
@@ -406,14 +461,14 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         freq = np.linspace(start_freq, end_freq, n_freq)
         flux_vals = np.linspace(start_flux, end_flux, n_flux)
 
-        fr_g_vs_flux=[]
-        fr_e_vs_flux=[]
-        for flux_ext in flux_vals:
-            fr_g, fr_e = _readout_frequencies(self._SIM_EC, self._SIM_EL, self._SIM_EJ, flux_ext + self._SIM_EARTH_FLUX, self._SIM_FR, self._SIM_G, q_levels=10, N_phot=5)
-            fr_g_vs_flux.append(fr_g)
-            fr_e_vs_flux.append(fr_e)
-        fr_g_vs_flux = np.asarray(fr_g_vs_flux)
-        fr_e_vs_flux = np.asarray(fr_e_vs_flux)
+        # Analytic stand-in for the flux dependence.  The fluxonium+resonator
+        # diagonalisation that used to live here now belongs to the
+        # offset-inverse model; this only has to be periodic in flux with
+        # extrema at 0 and 1/2 to exercise the fitting and data-output path.
+        # It is NOT a faithful fluxonium spectrum.
+        flux_phase = 2 * np.pi * (flux_vals + self._SIM_EARTH_FLUX)
+        fr_g_vs_flux = self._SIM_FR + self._SIM_CHI * np.cos(flux_phase)
+        fr_e_vs_flux = fr_g_vs_flux + self._SIM_GE_SPLITTING
 
         def _dummy_double_hanger_signal():
             signals = np.empty((n_flux, n_freq), dtype=np.complex128)
@@ -438,135 +493,248 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         return loc
 
 
+    def _load_data_qick(self):
+        path = self.data_loc / "data.ddh5"
+        if not path.exists():
+            raise FileNotFoundError(f"File {path} does not exist")
+        data = datadict_from_hdf5(path)
+
+        # Canonical layout for analyze(): flux (n_flux,), frequencies (n_freq,),
+        # signal (n_flux, n_freq).  The board averages over reps itself, so there
+        # is no repetition axis here.
+        shape = (int(self.flux_steps()), int(self.steps()))
+        self.independents["flux"] = np.asarray(data["current"]["values"]).reshape(shape)[:, 0]
+        self.independents["frequencies"] = np.asarray(data["freq"]["values"]).reshape(shape)[0, :]
+        self.dependents["signal"] = np.asarray(data["signal"]["values"]).reshape(shape)
+
     def _load_data_dummy(self):
         path = self.data_loc / "data.ddh5"
         if not path.exists():
             raise FileNotFoundError(f"File {path} does not exist")
         data = datadict_from_hdf5(path)
-        self.independents["frequencies"] = np.asarray(data["frequency"]["values"])
-        self.independents["flux"] = np.asarray(data["current"]["values"])
-        self.dependents["signal"] = np.asarray(data["signal"]["values"])
+
+        # Same canonical layout, after averaging over the repetition axis.
+        shape = (-1, int(self.flux_steps()), int(self.steps()))
+        self.independents["flux"] = np.asarray(data["current"]["values"]).reshape(shape)[0, :, 0]
+        self.independents["frequencies"] = np.asarray(data["frequency"]["values"]).reshape(shape)[0, 0, :]
+        self.dependents["signal"] = np.asarray(data["signal"]["values"]).reshape(shape).mean(axis=0)
 
 
     def analyze(self):
-        """Fit (single/double), compute zero-flux candidates with data having good snr."""
+        """Fit f_r at each flux point, filter, crop one flux period, resample.
+
+        This reproduces the preprocessing in the offset-inverse model's
+        "Generating experimental data for ML offset learning" notebook, so the
+        curve saved here can be handed straight to the trained CNN.
+        """
+        # analyze() re-runs on every retry; these must not accumulate.
+        self.fr_fit, self.snr, self.fit_results = [], [], []
+        self.linewidths, self.rejection_reasons = [], []
+
         with DatasetAnalysis(self.data_loc.parent, self.name) as ds:
-            freqs = np.asarray(self.independents["frequencies"][0,0,:])
-            flux_vals = np.asarray(self.independents["flux"][0,:,0])
-            sig2d = np.asarray(np.mean(self.dependents["signal"], axis=0))
-            self.model_choice = _decide_model(sig2d)
-            logger.info(f"model_choice = {self.model_choice}")
-            for sig_row in sig2d:
-                ret = add_mag_and_unwind_and_choose_fit(freqs, sig_row, self.model_choice)
-                p = ret.fit_result.params
-                self.fit_results.append(p)
-                self.snr.append(ret.snr)
-                self.fr_g.append(p["f_0"] if self.model_choice == "single" else p["fr_g"])
-                self.fr_e.append(np.nan if self.model_choice == "single" else p["fr_e"])
-                self.pg.append(np.nan if self.model_choice == "single" else p["p_g"])
-            phi_arr = np.asarray(flux_vals).astype(float)
-            frg_arr = np.asarray(self.fr_g).astype(float)
-            snr_arr = np.asarray(self.snr).astype(float)
-            mask = (
-                np.isfinite(phi_arr)
-                & np.isfinite(frg_arr)
-                & np.isfinite(snr_arr)
-                & (snr_arr >= self.SNR_THRESHOLD)
-            )
-            I_period = _estimate_current_period(phi_arr[mask], frg_arr[mask])
-            self.zero_flux_current = _zero_flux_point(self.EC(), self.EL(), self.EJ(), self.fr(), self.g(), phi_arr[mask]*2*np.pi/I_period, frg_arr[mask])
-            ds.add(
-                flux=phi_arr,
-                fr_g=frg_arr,
-                snr=snr_arr,
-                model_choice=self.model_choice,
-                zero_flux_current=np.asarray(self.zero_flux_current),
+            flux_axis = np.asarray(self.independents["flux"], dtype=float)
+            freq_axis = np.asarray(self.independents["frequencies"], dtype=float)
+            sig2d = np.asarray(self.dependents["signal"])
+
+            # Each flux slice is an ordinary single-resonator spectroscopy trace,
+            # so it is fitted by the same routine ResonatorSpectroscopy uses:
+            # median-background SNR, bounded fit, linewidth and structural
+            # rejection reasons all come from there.
+            for i in range(sig2d.shape[0]):
+                try:
+                    ret = ResonatorSpectroscopy.add_mag_and_unwind_and_fit(
+                        freq_axis, sig2d[i, :]
+                    )
+                    plt.close(ret.fig)  # one figure per flux point would pile up
+                    self.fit_results.append(ret.fit_result.params)
+                    self.fr_fit.append(float(ret.fit_result.params["f_0"].value))
+                    self.snr.append(float(ret.snr))
+                    self.linewidths.append(float(ret.linewidth))
+                    self.rejection_reasons.append(ret.rejection_reason)
+                except Exception as exc:
+                    # One bad flux point must not abort the whole sweep; it is
+                    # dropped by the mask below.
+                    logger.warning(f"Flux point {i} fit failed: {exc}")
+                    self.fit_results.append(None)
+                    self.fr_fit.append(np.nan)
+                    self.snr.append(np.nan)
+                    self.linewidths.append(np.nan)
+                    self.rejection_reasons.append(str(exc))
+
+            fr_fit = np.asarray(self.fr_fit, dtype=float)
+            snr_arr = np.asarray(self.snr, dtype=float)
+            linewidth_arr = np.asarray(self.linewidths, dtype=float)
+            # A structurally rejected fit (f_0 at a sweep edge, unresolved
+            # linewidth) is not usable even when its SNR is high.
+            structurally_ok = np.asarray(
+                [r is None for r in self.rejection_reasons], dtype=bool
             )
 
-            extent = [
-            float(flux_vals.min()) if flux_vals.size else 0.0,
-            float(flux_vals.max()) if flux_vals.size else 1.0,
-            float(freqs.min()) if freqs.size else 0.0,
-            float(freqs.max()) if freqs.size else 1.0,
-        ]
+            good_mask, local_med, _dev = _robust_filter_fitted_curve(
+                flux_axis=flux_axis,
+                fr_fit=np.where(structurally_ok, fr_fit, np.nan),
+                snr_list=snr_arr,
+                freq_axis=freq_axis,
+                snr_threshold=self.snr_threshold(),
+                median_window=self.MEDIAN_WINDOW,
+                mad_multiplier=self.MAD_MULTIPLIER,
+            )
+            self.good_mask = good_mask
+
+            order = np.argsort(flux_axis[good_mask])
+            flux_good = flux_axis[good_mask][order]
+            fr_good = fr_fit[good_mask][order]
+            self.flux_good, self.fr_good = flux_good, fr_good
+
+            # Crop exactly one flux period: infer the period, then slide a window
+            # of that width and keep the cleanest one.
+            (x_min, x_max, period_est,
+             starts, scores, lags, ac) = _auto_pick_one_period_window(
+                flux_good, fr_good,
+                n_points=self.N_CNN,
+                n_start_trials=self.N_START_TRIALS,
+            )
+
+            crop_mask = (flux_good >= x_min) & (flux_good <= x_max)
+            flux_crop, fr_crop = flux_good[crop_mask], fr_good[crop_mask]
+            if len(flux_crop) < self.MIN_CROP_POINTS:
+                raise ValueError(
+                    f"Only {len(flux_crop)} fitted points inside the crop window "
+                    f"[{x_min:.6g}, {x_max:.6g}]; need at least {self.MIN_CROP_POINTS}."
+                )
+
+            flux_resampled, fr_resampled = _resample_one_period(
+                flux_crop, fr_crop, n_points=self.N_CNN
+            )
+            self.period_est = float(period_est)
+            self.crop_window = (x_min, x_max)
+            self.flux_crop, self.fr_crop = flux_crop, fr_crop
+            self.flux_resampled, self.fr_resampled = flux_resampled, fr_resampled
+
+            ds.add(
+                flux=flux_axis,
+                fr_fit=fr_fit,
+                snr=snr_arr,
+                linewidth=linewidth_arr,
+                structurally_ok=structurally_ok,
+                good=good_mask,
+                local_median=local_med,
+                crop_x_min=float(x_min),
+                crop_x_max=float(x_max),
+                period_estimate=float(period_est),
+                flux_resampled=flux_resampled,
+                fr_resampled=fr_resampled,
+            )
+
+            # Companion .npz for the CNN.  Keys are named (not positional) so
+            # that the ML notebook's data["flux_resampled"] / data["fr_resampled"]
+            # lookups resolve.
+            self.npz_path = ds._new_file_path(
+                ds.savefolders[1], f"{self.name}_for_cnn", suffix="npz"
+            )
+            np.savez_compressed(
+                self.npz_path,
+                flux_axis=flux_axis,
+                freq_axis=freq_axis,
+                signal2d=sig2d,
+                flux_good=flux_good,
+                fr_good=fr_good,
+                x_min=x_min,
+                x_max=x_max,
+                period_est=period_est,
+                flux_crop=flux_crop,
+                fr_crop=fr_crop,
+                flux_resampled=flux_resampled,
+                fr_resampled=fr_resampled,
+            )
+            logger.info(f"Saved CNN input curve to {self.npz_path}")
+
             fig, ax = plt.subplots()
-            plt.imshow(np.abs(sig2d.T), origin="lower", aspect="auto", extent=extent, cmap="inferno")
-            plt.colorbar(label="|S| (a.u.)")
-            ax.plot(phi_arr[mask], frg_arr[mask], ".-", label="Fitted resonator read out frequency (SNR > 2)")
-            ax.axvline(self.zero_flux_current, linestyle="--", label="Zero flux point")
-            ax.set_ylim(freqs.min(), freqs.max())
-            ax.set_xlabel("Flux(rad)")
-            ax.set_ylabel("Frequency(GHz)")
-            ax.set_title("Resonator signal response vs frequencies vs flux")
-            ax.legend()
+            mesh = ax.pcolormesh(flux_axis, freq_axis, np.abs(sig2d).T, shading="auto")
+            fig.colorbar(mesh, ax=ax, label="|S| (a.u.)")
+            ax.plot(flux_good, fr_good, "r.", ms=3, alpha=0.5, label="filtered fit")
+            ax.plot(flux_resampled, fr_resampled, "wo", ms=3, mec="k", mew=0.5,
+                    label=f"resampled {self.N_CNN} pts")
+            ax.axvline(x_min, color="cyan", linestyle="--", label="one-period crop")
+            ax.axvline(x_max, color="cyan", linestyle="--")
+            ax.set_xlabel("Flux / Current")
+            ax.set_ylabel("Frequency")
+            ax.set_title("Resonator response vs flux, cropped to one period")
+            ax.legend(fontsize="small")
             image_path = ds._new_file_path(ds.savefolders[1], self.name, suffix="png")
             fig.savefig(image_path)
             self.figure_paths.append(image_path)
 
-            frg_good = frg_arr[mask]
-            c_centered = phi_arr[mask] - float(self.zero_flux_current)
-            idx0 = int(np.argmin(np.abs(c_centered)))
-            n_sym_pairs =  10
-            left  = frg_good[idx0-1 : idx0-n_sym_pairs-1 : -1]
-            right = frg_good[idx0+1 : idx0+n_sym_pairs+1]
-            diffs = right - left
-            symmetry_score = float(np.sqrt(np.mean(diffs**2)))
-            n_fit = 5
-            i_start = idx0 - n_fit
-            i_stop  = idx0 + n_fit + 1
-            x = c_centered[i_start:i_stop]
-            y = frg_good[i_start:i_stop]
-            a, b = np.polyfit(x, y, 1)
-            zero_slope = float(a)
-            self.symmetry_score = symmetry_score
-            self.zero_slope = zero_slope
+            fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 6))
+            ax1.plot(lags, ac, "-")
+            ax1.axvline(period_est, color="red", linestyle="--", label="estimated period")
+            ax1.set_xlabel("Lag in flux / current")
+            ax1.set_ylabel("Autocorrelation")
+            ax1.legend(fontsize="small")
+            ax2.plot(starts, scores, "o-", ms=3)
+            ax2.axvline(x_min, color="red", linestyle="--", label="chosen start")
+            ax2.set_xlabel("Window start")
+            ax2.set_ylabel("Window score")
+            ax2.set_yscale("log")
+            ax2.legend(fontsize="small")
+            fig2.suptitle("One-period selection diagnostics")
+            fig2.tight_layout()
+            diag_path = ds._new_file_path(
+                ds.savefolders[1], f"{self.name}_period_selection", suffix="png"
+            )
+            fig2.savefig(diag_path)
+            self.figure_paths.append(diag_path)
 
 
     def evaluate(self) -> OperationStatus:
         """
-        Final evaluation: determine quality of flux sweep fit.
-        Criteria:
-        1. Enough flux points have SNR above SNR_THRESHOLD.
-        2. The fitted f_r_g(phi) is sufficiently symmetric around the
-            extracted zero-flux point (symmetry_score small).
-        3. The slope near the zero-flux point is small (flat minimum).
+        Final evaluation: is the measured f_r(flux) curve good enough to hand to
+        the offset-inverse model?  Criterion: enough flux points fitted with SNR
+        above the SNR threshold.  Whether the curve actually locates a zero/half
+        flux point is decided downstream, not here.
         """
-        
+
         if not self.snr or len(self.snr) == 0:
             self.report_output = ["No SNR computed. Did analyze() run?"]
             logger.warning("No SNR computed. Did analyze() run?")
             return OperationStatus.FAILURE
+        threshold = self.snr_threshold()
+        min_fraction = self.min_good_fraction()
         snr_arr = np.asarray(self.snr, dtype=float)
-        success_mask = snr_arr >= self.SNR_THRESHOLD
-        good_fraction = float(np.mean(success_mask))
-        all_snr_good = good_fraction >= 0.8
-        symmetry_ok = abs(self.symmetry_score) <= 1e-3
-        slope_ok    = abs(self.zero_slope)     <= 1e-3
+        good_fraction = float(np.nanmean(snr_arr >= threshold))
+        all_snr_good = good_fraction >= min_fraction
 
+        curve_ok = (
+            self.fr_resampled is not None
+            and len(self.fr_resampled) == self.N_CNN
+            and np.all(np.isfinite(self.fr_resampled))
+        )
+
+        x_min, x_max = self.crop_window if self.crop_window else (float("nan"),) * 2
         msg = (
             "## Resonator Spectroscopy vs Flux\n"
             f"Flux points (traces): {len(self.snr)}\n"
-            f"SNR min/median/max: {snr_arr.min():.2f} / "
-            f"{np.median(snr_arr):.2f} / {snr_arr.max():.2f}\n"
-            f"Pass threshold (per trace): SNR ≥ {self.SNR_THRESHOLD}\n"
-            f"Good-SNR fraction: {good_fraction:.2%}\n\n"
-            f"Zero-flux current estimate: {self.zero_flux_current}\n"
-            f"Symmetry score (f(+φ) vs f(−φ)): {self.symmetry_score:.3g} "
-            f"Slope near zero-flux: {self.zero_slope:.3g} "
+            f"Structurally valid fits: "
+            f"{sum(r is None for r in self.rejection_reasons)}/{len(self.rejection_reasons)}\n"
+            f"SNR min/median/max: {np.nanmin(snr_arr):.2f} / "
+            f"{np.nanmedian(snr_arr):.2f} / {np.nanmax(snr_arr):.2f}\n"
+            f"Pass threshold (per trace): SNR ≥ {threshold}\n"
+            f"Required good fraction: {min_fraction:.0%}\n"
+            f"Good-SNR fraction: {good_fraction:.2%}\n"
+            f"Points kept after filtering: "
+            f"{0 if self.good_mask is None else int(np.sum(self.good_mask))}\n"
+            f"Inferred period: {self.period_est}\n"
+            f"One-period crop: [{x_min:.6g}, {x_max:.6g}]\n"
+            f"Resampled curve for CNN: {self.N_CNN} points -> `{self.npz_path}`\n"
         )
         self.report_output = [msg]
-        if all_snr_good and symmetry_ok and slope_ok:
+        if all_snr_good and curve_ok:
             return OperationStatus.SUCCESS
-        elif symmetry_ok and slope_ok:
-            logger.info(self.report_output)
-            logger.warning(f"Some traces have SNR below threshold {self.SNR_THRESHOLD}")
-            return OperationStatus.FAILURE
-        elif all_snr_good:
-            logger.info(self.report_output)
-            logger.warning("Bad zero flux point estimation")
-            return OperationStatus.FAILURE
-        else:
-            logger.info(self.report_output)
-            logger.warning("Some traces have SNR below threshold and Bad zero flux point estimation")
-            return OperationStatus.FAILURE
+
+        logger.info(self.report_output)
+        if not all_snr_good:
+            logger.warning(f"Some traces have SNR below threshold {threshold}")
+        if not curve_ok:
+            logger.warning("No usable resampled one-period curve was produced")
+        return OperationStatus.FAILURE
 

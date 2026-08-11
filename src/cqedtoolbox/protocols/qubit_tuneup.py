@@ -11,6 +11,7 @@ from operations.fluxonium.res_spec_vs_flux import ResonatorSpectroscopyVsFlux
 
 import cqedtoolbox.instruments.qick.qick_sweep_v2 as qick_sweep_v2
 from cqedtoolbox.protocols.configs.qick_config import QickConfig
+from cqedtoolbox.instruments.qcodes_drivers.DMT.DMTCurrentSource import DMTCurrentSource
 from cqedtoolbox import setup_measurements
 
 
@@ -22,14 +23,14 @@ select_platform("QICK")
 
 class QubitTuneup(ProtocolBase):
 
-    def __init__(self, params, report_path: Path = Path(".")):
+    def __init__(self, params, set_flux_current=None, report_path: Path = Path(".")):
         super().__init__(report_path)
 
         self.root_branch = BranchBase("QubitTuneup")
         self.root_branch.extend([
             # ResonatorSpectroscopy(params),
             # ResonatorSpectroscopyVsGain(params),
-            ResonatorSpectroscopyVsFlux(params)
+            ResonatorSpectroscopyVsFlux(params, set_flux_current=set_flux_current)
             # SaturationSpectroscopy(params),
 
 
@@ -63,4 +64,21 @@ setup_measurements.options.parameters = params
 
 # This is by Port
 
-QubitTuneup(params).execute()
+# Flux bias current source. Opened once here and shared by every operation that
+# sweeps flux -- qcodes registers instruments by name, so a second one with the
+# same name would raise.
+currS = DMTCurrentSource("currSour", address="ASRL3::INSTR")
+
+FLUX_CHANNEL = "ch2"
+FLUX_RAMP_STEP = 0.125   # uA per step, walked rather than jumped
+FLUX_RAMP_DELAY = 0.001  # s between steps
+
+
+def set_flux_current(value):
+    """Ramp the flux bias to `value` (uA)."""
+    getattr(currS, FLUX_CHANNEL).ramp_current(
+        float(value), FLUX_RAMP_STEP, FLUX_RAMP_DELAY
+    )
+
+
+QubitTuneup(params, set_flux_current=set_flux_current).execute()

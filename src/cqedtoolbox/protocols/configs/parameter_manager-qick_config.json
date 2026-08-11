@@ -99,6 +99,14 @@
     "unit": "",
     "value": 2.0
   },
+  "parameter_manager.corrections.res_spec_vs_flux.min_good_fraction": {
+    "unit": "",
+    "value": 0.8
+  },
+  "parameter_manager.corrections.res_spec_vs_flux.snr": {
+    "unit": "",
+    "value": 6.0
+  },
   "parameter_manager.corrections.res_spec_vs_gain.high_snr": {
     "unit": "",
     "value": 2.0
@@ -228,7 +236,7 @@
     "value": 2.0
   },
   "parameter_manager.q01.flux.zero_current": {
-    "unit": "mA",
+    "unit": "uA",
     "value": 0.0
   },
   "parameter_manager.q01.pulses.const.gain": {
@@ -376,16 +384,16 @@
     "value": 100
   },
   "parameter_manager.q01.scripts.res_spec_vs_flux.end_flux": {
-    "unit": "mA",
-    "value": 1.0
+    "unit": "uA",
+    "value": 1000.0
   },
   "parameter_manager.q01.scripts.res_spec_vs_flux.start_flux": {
-    "unit": "mA",
-    "value": -1.0
+    "unit": "uA",
+    "value": 0.0
   },
   "parameter_manager.q01.scripts.res_spec_vs_flux.steps": {
     "unit": "",
-    "value": 41
+    "value": 101
   },
   "parameter_manager.q01.scripts.res_spec_vs_gain.end_g": {
     "unit": "",
