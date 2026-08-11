@@ -16,7 +16,7 @@ from labcore.measurement.storage import run_and_save_sweep
 from labcore.measurement.record import record_as, independent, dependent
 
 from labcore.protocols.base import (ProtocolOperation, OperationStatus,
-                                    CorrectionParameter)
+                                    CorrectionParameter, CheckResult, EvaluateResult)
 # from cqedtoolbox.protocols.parameters import (
 #     Repetition, ResonatorSpecSteps, StartReadoutFrequency, EndReadoutFrequency,
 #     StartFlux, EndFlux, FluxSteps,
@@ -743,7 +743,10 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         if not self.snr or len(self.snr) == 0:
             self.report_output = ["No SNR computed. Did analyze() run?"]
             logger.warning("No SNR computed. Did analyze() run?")
-            return OperationStatus.FAILURE
+            return EvaluateResult(
+                OperationStatus.FAILURE,
+                [CheckResult("snr_quality", False, "analyze() produced no fits")],
+            )
         threshold = self.snr_threshold()
         min_fraction = self.min_good_fraction()
         snr_arr = np.asarray(self.snr, dtype=float)
@@ -764,7 +767,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             f"{sum(r is None for r in self.rejection_reasons)}/{len(self.rejection_reasons)}\n"
             f"SNR min/median/max: {np.nanmin(snr_arr):.2f} / "
             f"{np.nanmedian(snr_arr):.2f} / {np.nanmax(snr_arr):.2f}\n"
-            f"Pass threshold (per trace): SNR ≥ {threshold}\n"
+            f"Pass threshold (per trace): SNR >= {threshold}\n"
             f"Required good fraction: {min_fraction:.0%}\n"
             f"Good-SNR fraction: {good_fraction:.2%}\n"
             f"Points kept after filtering: "
@@ -777,13 +780,23 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         else:
             msg += f"**No CNN input produced:** {self.crop_error}\n"
         self.report_output = [msg]
-        if all_snr_good and curve_ok:
-            return OperationStatus.SUCCESS
 
-        logger.info(self.report_output)
-        if not all_snr_good:
-            logger.warning(f"Some traces have SNR below threshold {threshold}")
-        if not curve_ok:
-            logger.warning("No usable resampled one-period curve was produced")
-        return OperationStatus.FAILURE
+        checks = [
+            CheckResult(
+                "snr_quality", all_snr_good,
+                f"{good_fraction:.0%} of {len(self.snr)} flux points have SNR >= "
+                f"{threshold} (need {min_fraction:.0%})",
+            ),
+            CheckResult(
+                "cnn_input", curve_ok,
+                f"{self.N_CNN}-point one-period curve saved" if curve_ok
+                else f"no one-period curve: {self.crop_error}",
+            ),
+        ]
+        status = (OperationStatus.SUCCESS if all(c.passed for c in checks)
+                  else OperationStatus.FAILURE)
+        for check in checks:
+            if not check.passed:
+                logger.warning(f"{check.name}: {check.description}")
+        return EvaluateResult(status, checks)
 
