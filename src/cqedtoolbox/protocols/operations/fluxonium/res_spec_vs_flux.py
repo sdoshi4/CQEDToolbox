@@ -416,6 +416,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         self.flux_resampled = None
         self.fr_resampled = None
         self.npz_path = None
+        self.crop_error = None
 
 
     def _measure_qick(self) -> Path:
@@ -533,9 +534,14 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         "Generating experimental data for ML offset learning" notebook, so the
         curve saved here can be handed straight to the trained CNN.
         """
-        # analyze() re-runs on every retry; these must not accumulate.
+        # analyze() re-runs on every retry; these must not accumulate, and stale
+        # crop results from a previous attempt must not be reported as current.
         self.fr_fit, self.snr, self.fit_results = [], [], []
         self.linewidths, self.rejection_reasons = [], []
+        self.crop_error = None
+        self.period_est = self.crop_window = self.npz_path = None
+        self.flux_crop = self.fr_crop = None
+        self.flux_resampled = self.fr_resampled = None
 
         with DatasetAnalysis(self.data_loc.parent, self.name) as ds:
             flux_axis = np.asarray(self.independents["flux"], dtype=float)
@@ -592,31 +598,8 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             fr_good = fr_fit[good_mask][order]
             self.flux_good, self.fr_good = flux_good, fr_good
 
-            # Crop exactly one flux period: infer the period, then slide a window
-            # of that width and keep the cleanest one.
-            (x_min, x_max, period_est,
-             starts, scores, lags, ac) = _auto_pick_one_period_window(
-                flux_good, fr_good,
-                n_points=self.N_CNN,
-                n_start_trials=self.N_START_TRIALS,
-            )
-
-            crop_mask = (flux_good >= x_min) & (flux_good <= x_max)
-            flux_crop, fr_crop = flux_good[crop_mask], fr_good[crop_mask]
-            if len(flux_crop) < self.MIN_CROP_POINTS:
-                raise ValueError(
-                    f"Only {len(flux_crop)} fitted points inside the crop window "
-                    f"[{x_min:.6g}, {x_max:.6g}]; need at least {self.MIN_CROP_POINTS}."
-                )
-
-            flux_resampled, fr_resampled = _resample_one_period(
-                flux_crop, fr_crop, n_points=self.N_CNN
-            )
-            self.period_est = float(period_est)
-            self.crop_window = (x_min, x_max)
-            self.flux_crop, self.fr_crop = flux_crop, fr_crop
-            self.flux_resampled, self.fr_resampled = flux_resampled, fr_resampled
-
+            # Everything measured is recorded before the crop is attempted, so a
+            # failure below still leaves a full record behind.
             ds.add(
                 flux=flux_axis,
                 fr_fit=fr_fit,
@@ -625,6 +608,61 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
                 structurally_ok=structurally_ok,
                 good=good_mask,
                 local_median=local_med,
+            )
+
+            # Raw flux sweep with the surviving fit on top.  Registered here,
+            # ahead of the crop, so the report shows the measurement even when
+            # the one-period selection cannot run.
+            fig, ax = plt.subplots()
+            mesh = ax.pcolormesh(flux_axis, freq_axis, np.abs(sig2d).T, shading="auto")
+            fig.colorbar(mesh, ax=ax, label="|S| (a.u.)")
+            ax.plot(flux_good, fr_good, "r.", ms=3, alpha=0.5, label="filtered fit")
+            ax.set_xlabel("Flux / Current")
+            ax.set_ylabel("Frequency")
+            ax.set_title("Resonator response vs flux")
+            ax.legend(fontsize="small")
+            raw_path = ds._new_file_path(ds.savefolders[1], self.name, suffix="png")
+            fig.savefig(raw_path)
+            self.figure_paths.append(raw_path)
+
+            # Crop exactly one flux period: infer the period, then slide a window
+            # of that width and keep the cleanest one.  This needs well over one
+            # period of well-fitted points, so it is the first thing to fail on a
+            # short or noisy sweep -- treat that as a failed operation, not as a
+            # crash that discards the report.
+            try:
+                (x_min, x_max, period_est,
+                 starts, scores, lags, ac) = _auto_pick_one_period_window(
+                    flux_good, fr_good,
+                    n_points=self.N_CNN,
+                    n_start_trials=self.N_START_TRIALS,
+                )
+
+                crop_mask = (flux_good >= x_min) & (flux_good <= x_max)
+                flux_crop, fr_crop = flux_good[crop_mask], fr_good[crop_mask]
+                if len(flux_crop) < self.MIN_CROP_POINTS:
+                    raise ValueError(
+                        f"Only {len(flux_crop)} fitted points inside the crop window "
+                        f"[{x_min:.6g}, {x_max:.6g}]; need at least {self.MIN_CROP_POINTS}."
+                    )
+
+                flux_resampled, fr_resampled = _resample_one_period(
+                    flux_crop, fr_crop, n_points=self.N_CNN
+                )
+            except Exception as exc:
+                self.crop_error = str(exc)
+                logger.warning(
+                    f"Could not crop one flux period ({exc}); the raw sweep and "
+                    f"fitted curve are still saved, but there is no CNN input."
+                )
+                return
+
+            self.period_est = float(period_est)
+            self.crop_window = (x_min, x_max)
+            self.flux_crop, self.fr_crop = flux_crop, fr_crop
+            self.flux_resampled, self.fr_resampled = flux_resampled, fr_resampled
+
+            ds.add(
                 crop_x_min=float(x_min),
                 crop_x_max=float(x_max),
                 period_estimate=float(period_est),
@@ -667,7 +705,9 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             ax.set_ylabel("Frequency")
             ax.set_title("Resonator response vs flux, cropped to one period")
             ax.legend(fontsize="small")
-            image_path = ds._new_file_path(ds.savefolders[1], self.name, suffix="png")
+            image_path = ds._new_file_path(
+                ds.savefolders[1], f"{self.name}_one_period", suffix="png"
+            )
             fig.savefig(image_path)
             self.figure_paths.append(image_path)
 
@@ -731,8 +771,11 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             f"{0 if self.good_mask is None else int(np.sum(self.good_mask))}\n"
             f"Inferred period: {self.period_est}\n"
             f"One-period crop: [{x_min:.6g}, {x_max:.6g}]\n"
-            f"Resampled curve for CNN: {self.N_CNN} points -> `{self.npz_path}`\n"
         )
+        if curve_ok:
+            msg += f"Resampled curve for CNN: {self.N_CNN} points -> `{self.npz_path}`\n"
+        else:
+            msg += f"**No CNN input produced:** {self.crop_error}\n"
         self.report_output = [msg]
         if all_snr_good and curve_ok:
             return OperationStatus.SUCCESS
