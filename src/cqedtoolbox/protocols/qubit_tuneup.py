@@ -37,12 +37,13 @@ class QubitTuneup(ProtocolBase):
 
         self.root_branch = BranchBase("QubitTuneup")
         self.root_branch.extend([
-            # ResonatorSpectroscopy(params),
-            # ResonatorSpectroscopyVsGain(params),
-            res_spec_vs_flux,
-            FluxOffsetInference(params, source=res_spec_vs_flux,
-                                checkpoint_path=cnn_checkpoint),
-            FluxoniumResonatorTheoryFit(params, source=res_spec_vs_flux),
+            ResonatorSpectroscopy(params),
+            ResonatorSpectroscopyVsGain(params),
+            # res_spec_vs_flux,
+            # FluxOffsetInference(params, source=res_spec_vs_flux,
+            #                     checkpoint_path=cnn_checkpoint),
+            # FluxoniumResonatorTheoryFit(params, source=res_spec_vs_flux),
+
             # SaturationSpectroscopy(params),
 
 
@@ -86,11 +87,13 @@ def set_flux_current(value):
     )
 
 
-# Trained offset-inverse CNN. Produced by the Fluxonium-offset-inverse-model
-# repo; FluxOffsetInference fails cleanly if this is missing.
+
+
+
+
 CNN_CHECKPOINT = "fluxonium_inverse_cnn_better.pt"
 
-
+currS.ch2.ramp_current(100, .5, .001)
 QubitTuneup(params,
             set_flux_current=set_flux_current,
             cnn_checkpoint=CNN_CHECKPOINT).execute()

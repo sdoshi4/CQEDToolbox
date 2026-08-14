@@ -463,34 +463,34 @@ class ResonatorSpectroscopy(ProtocolOperation):
         kappa = max(kappa, 2 * step)
 
         f0_guess = float(frequencies[peak_index])
-        # Off-resonant level at the resonance: the background is taken from a
-        # running median, so the dip itself does not drag this down.
+        # # Off-resonant level at the resonance: the background is taken from a
+        # # running median, so the dip itself does not drag this down.
         base_level = float(background[peak_index])
         amplitude = max(base_level, np.finfo(float).eps)
         contrast = float(np.clip(feature_height / amplitude, 0.02, 0.9))
         q_l = f0_guess / kappa
-        # A linewidth wider than the span or narrower than two frequency steps
-        # cannot locate a resonator, so the fit is not allowed to go there.
+        # # A linewidth wider than the span or narrower than two frequency steps
+        # # cannot locate a resonator, so the fit is not allowed to go there.
         q_min = f0_guess / span
         q_e_max = f0_guess / (2 * step)
 
         # Add guesses and bounds on parameters based on the above analysis
         fit_params = {
-            "A": lmfit.Parameter("A", value=amplitude, min=0.1 * amplitude, max=10 * amplitude),
-            "f_0": lmfit.Parameter("f_0", value=f0_guess, min=frequencies[0], max=frequencies[-1]),
+            # "A": lmfit.Parameter("A", value=amplitude, min=0.1 * amplitude, max=10 * amplitude),
+            # "f_0": lmfit.Parameter("f_0", value=f0_guess, min=frequencies[0], max=frequencies[-1]),
             "Q_i": lmfit.Parameter("Q_i", value=float(np.clip(q_l / (1 - contrast), q_min, 1e6)),
                                    min=q_min, max=1e6),
             # Q_e sets the observable width so is capped by our sampling.
             "Q_e_mag": lmfit.Parameter("Q_e_mag", value=float(np.clip(q_l / contrast, q_min, q_e_max)),
                                        min=q_min, max=q_e_max),
             # |theta| < pi/2 keeps Q_c = Q_e_mag / cos(theta) positive while still allowing the circle rotation from an impedance mismatch.
-            "theta": lmfit.Parameter("theta", value=0.0, min=-np.pi / 2 + 0.05, max=np.pi / 2 - 0.05),
-            "phase_offset": lmfit.Parameter("phase_offset",
-                                            value=float(np.angle(np.mean(signal_unwind))),
-                                            min=-2 * np.pi, max=2 * np.pi),
-            "phase_slope": lmfit.Parameter("phase_slope", value=0.0,
-                                           min=-20 * np.pi / span, max=20 * np.pi / span), # shouldn't be much phase delay
-            "transmission_slope": lmfit.Parameter("transmission_slope", value=0, min=-500, max=500),
+            # "theta": lmfit.Parameter("theta", value=0.0, min=-np.pi / 2 + 0.05, max=np.pi / 2 - 0.05),
+            # "phase_offset": lmfit.Parameter("phase_offset",
+            #                                 value=float(np.angle(np.mean(signal_unwind))),
+            #                                 min=-2 * np.pi, max=2 * np.pi),
+            # "phase_slope": lmfit.Parameter("phase_slope", value=0.0,
+            #                                min=-20 * np.pi / span, max=20 * np.pi / span), # shouldn't be much phase delay
+            # "transmission_slope": lmfit.Parameter("transmission_slope", value=0, min=-500, max=500),
         }
 
         fit = HangerResponseBruno(frequencies, signal_unwind)

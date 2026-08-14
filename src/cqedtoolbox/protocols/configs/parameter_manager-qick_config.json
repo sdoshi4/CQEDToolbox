@@ -329,7 +329,7 @@
   },
   "parameter_manager.q01.readout.bare_fr": {
     "unit": "GHz",
-    "value": 4.07
+    "value": 6.46
   },
   "parameter_manager.q01.readout.dac_ch": {
     "unit": "",
@@ -337,7 +337,7 @@
   },
   "parameter_manager.q01.readout.freq": {
     "unit": "MHz",
-    "value": 6463.011988105046
+    "value": 6462.785292873528
   },
   "parameter_manager.q01.readout.gain": {
     "unit": "",
@@ -381,11 +381,11 @@
   },
   "parameter_manager.q01.scripts.res_spec.end_f": {
     "unit": "MHz",
-    "value": 6468.011988105046
+    "value": 6467.785292873528
   },
   "parameter_manager.q01.scripts.res_spec.start_f": {
     "unit": "MHz",
-    "value": 6458.011988105046
+    "value": 6457.785292873528
   },
   "parameter_manager.q01.scripts.res_spec.steps": {
     "unit": "",
@@ -401,7 +401,7 @@
   },
   "parameter_manager.q01.scripts.res_spec_vs_flux.steps": {
     "unit": "",
-    "value": 101
+    "value": 400
   },
   "parameter_manager.q01.scripts.res_spec_vs_gain.end_g": {
     "unit": "",
@@ -461,7 +461,7 @@
   },
   "parameter_manager.qick.default_reps": {
     "unit": "",
-    "value": 1000
+    "value": 500
   },
   "parameter_manager.qick.final_delay": {
     "unit": "us",

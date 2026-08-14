@@ -25,9 +25,7 @@ from parameters import (
     Repetition, ResonatorSpecSteps, StartReadoutFrequency, EndReadoutFrequency,
     StartFlux, EndFlux, FluxSteps,
 )
-# Relative: must resolve to the res_spec next to this package, not to whichever
-# cqedtoolbox is installed in the environment.
-from ..single_qubit.res_spec import ResonatorSpectroscopy
+from ..single_qubit.res_spec import ResonatorSpectroscopy, UnwindAndFitRet
 from cqedtoolbox.measurement_lib.qick.single_transmon_v2 import FreqSweepProgram
 from cqedtoolbox.fitfuncs.resonators import moving_average
 
@@ -60,7 +58,7 @@ class ResSpecVsFluxMinGoodFraction(CorrectionParameter):
         init=False,
     )
 
-    def _qick_getter(self):
+    def _qick_getter(self): 
         return self.params.corrections.res_spec_vs_flux.min_good_fraction()
 
     def _qick_setter(self, v):
@@ -336,13 +334,77 @@ def _resample_one_period(flux_seg, fr_seg, n_points=121):
     return x_new, y_new
 
 
+
+
+
+
+
+def add_mag_and_unwind_and_choose_fit(frequencies, signal_raw) -> UnwindAndFitRet:
+    phase_unwrap = np.unwrap(np.angle(signal_raw))
+    phase_slope = np.polyfit(frequencies, phase_unwrap, 1)[0]
+    signal_unwind = signal_raw * np.exp(-1j * frequencies * phase_slope)
+    magnitude = np.abs(signal_raw)
+    phase = np.arctan2(signal_unwind.imag, signal_unwind.real)
+    # DO DOUBLE HANGER FIT
+    fit = DoubleHangerResponseBruno(frequencies, signal_unwind)
+    fit_result = fit.run(fit)
+    fit_curve = fit_result.eval()
+    residuals = signal_unwind - fit_curve
+    amp = fit_result.params["A"].value
+    noise = np.std(residuals)
+    snr = np.abs(amp / (4 * noise))
+
+    params = fit_result.params
+    q_i = params["Q_i"].value
+    q_e = params["Q_e_mag"].value
+    cos_theta = float(np.cos(params["theta"].value))
+    if q_i > 0 and q_e > 0 and cos_theta > 0:
+        q_c = q_e / cos_theta
+        q_loaded = 1.0 / (1.0 / q_i + 1.0 / q_c)
+        linewidth = float(params["f_0"].value / q_loaded)
+    else:
+        linewidth = float("nan")
+
+    # ensure that the predicted/fitted resonator and linewidth are actually in the scan
+    reasons = []
+    # if not contained:
+    #     reasons.append("no contained half-height feature")
+    # if not frequencies[0] + step < f_0 < frequencies[-1] - step:
+    #     reasons.append("f_0 at sweep edge")
+    # if not np.isfinite(linewidth) or not 2 * step <= linewidth <= 0.25 * span:
+    #     reasons.append("linewidth unresolved or wider than a quarter of the span")
+    rejection_reason = "; ".join(reasons) if reasons else None
+
+    fig, ax = plt.subplots()
+    ax.set_title("Double Hanger ResFlux Fit")
+    ax.set_xlabel("Frequency (MHz)")
+    ax.set_ylabel("Magnitude Signal (A.U)")
+    ax.plot(frequencies, magnitude, label="Data")
+    ax.plot(frequencies, np.abs(fit_curve), label="Fit")
+    ax.legend()
+
+    ret = UnwindAndFitRet(
+        signal_unwind=signal_unwind,
+        magnitude=magnitude,
+        phase=phase,
+        fit_curve=fit_curve,
+        fit_result=fit_result,
+        residuals=residuals,
+        snr=snr,
+        linewidth=linewidth,
+        rejection_reason=rejection_reason,
+        fig=fig,
+        ax=ax,
+    )
+    return ret
+
+
+
+
+
 class ResonatorSpectroscopyVsFlux(ProtocolOperation):
 
-    # --- analysis-only knobs ---
-    # These shape the preprocessing but are not pass/fail criteria, so they stay
-    # here rather than in the parameter manager.  The SNR threshold and the
-    # minimum good fraction *are* check criteria and live there instead.
-    # Outlier rejection of the fitted curve.
+    # --- analysis-only knobs for preprocessing ---
     MEDIAN_WINDOW = 16
     MAD_MULTIPLIER = 20.0
     # Must match the flux grid the CNN was trained on.
@@ -357,7 +419,6 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
     FREQ_UNIT_TO_GHZ = 1e-3
 
 
-    # True fake data params (may change to any)
     _SIM_QI = 8000.0
     _SIM_QE_MAG = 5000.0
     _SIM_THETA = 0.5
@@ -378,9 +439,6 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
     def __init__(self, params, set_flux_current=None):
         super().__init__()
 
-        # Callable applying one flux bias set point.  Injected so that the
-        # instrument, its channel and how it is ramped all stay in the setup
-        # script; this operation only picks the set points and sweeps them.
         self.set_flux_current = set_flux_current
 
         self._register_inputs(
@@ -514,12 +572,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         if not path.exists():
             raise FileNotFoundError(f"File {path} does not exist")
         data = datadict_from_hdf5(path)
-
-        # Canonical layout for analyze(): flux (n_flux,), frequencies (n_freq,),
-        # signal (n_flux, n_freq).  The board averages over reps itself, so there
-        # is no repetition axis.  The outer pointer records one current per flux
-        # point, while freq/signal come back already gridded; the frequency axis
-        # is the same at every flux point, so take the first row.
+        
         self.independents["flux"] = np.asarray(data["current"]["values"])
         self.independents["frequencies"] = np.asarray(data["freq"]["values"])[0, :]
         self.dependents["signal"] = np.asarray(data["signal"]["values"])
@@ -565,7 +618,10 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             # rejection reasons all come from there.
             for i in range(sig2d.shape[0]):
                 try:
-                    ret = ResonatorSpectroscopy.add_mag_and_unwind_and_fit(
+                    # ret = ResonatorSpectroscopy.add_mag_and_unwind_and_fit(
+                    #     freq_axis, sig2d[i, :]
+                    # )
+                    ret = add_mag_and_unwind_and_choose_fit(
                         freq_axis, sig2d[i, :]
                     )
                     plt.close(ret.fig)  # one figure per flux point would pile up
