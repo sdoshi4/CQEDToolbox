@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import lmfit
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.ndimage import median_filter
 import matplotlib.pyplot as plt
 
 from labcore.analysis import DatasetAnalysis, FitResult
@@ -431,15 +432,29 @@ class ResonatorSpectroscopy(ProtocolOperation):
         magnitude = np.abs(signal_raw)
         phase = np.arctan2(signal_unwind.imag, signal_unwind.real)
 
-        guess = HangerResponseBruno.guess(frequencies, signal_unwind)
         span = float(frequencies[-1] - frequencies[0])
         step = float(np.median(np.diff(frequencies)))
-        q_min = guess["f_0"] / span # max linewidth of entire scan
+
+        # median filter removes noise patterns larger than the resonator feature
+        baseline = median_filter(magnitude, size=int(np.clip(magnitude.size // 8, 21, 201)) | 1, mode="nearest")
+        deviation = baseline - magnitude # positive for a dip now
+        peak = int(np.argmax(deviation))
+        depth = float(deviation[peak])
+        half = np.flatnonzero(deviation >= depth / 2) # pts outside of the feature
+        kappa = max(float(frequencies[half.max()] - frequencies[half.min()]), 2 * step)
+
+        f0_guess = float(frequencies[peak])
+        base_level = max(float(baseline[peak]), np.finfo(float).eps) # level the trace would have without the resonator (A)
+        relative_depth = float(np.clip(depth / base_level, 0.02, 0.95)) # = Q_l / Q_c
+        q_l = f0_guess / kappa
+        q_min = f0_guess / span # a linewidth wider than the scan is not a resonance
 
         fit_params = {
-            "Q_i": lmfit.Parameter("Q_i", value=float(np.clip(guess["Q_i"], q_min, 1e8)),
+            "f_0": lmfit.Parameter("f_0", value=f0_guess, min=frequencies[0], max=frequencies[-1]),
+            "A": lmfit.Parameter("A", value=base_level),
+            "Q_i": lmfit.Parameter("Q_i", value=float(np.clip(q_l / (1 - relative_depth), q_min, 1e8)),
                                    min=q_min, max=1e8),
-            "Q_e_mag": lmfit.Parameter("Q_e_mag", value=float(np.clip(guess["Q_e_mag"], q_min, 1e8)),
+            "Q_e_mag": lmfit.Parameter("Q_e_mag", value=float(np.clip(q_l / relative_depth, q_min, 1e8)), 
                                        min=q_min, max=1e8),
         }
 
@@ -468,9 +483,7 @@ class ResonatorSpectroscopy(ProtocolOperation):
             reasons.append("linewidth unresolved or wider than a quarter of the span")
         rejection_reason = "; ".join(reasons) if reasons else None
 
-        fit_magnitude = np.abs(fit_curve) # feature amplitude from the de-noised fit curve
-        depth = float(np.median(fit_magnitude) - fit_magnitude.min())
-        # noise from point-to-point scatter: median keeps dip out of estimate
+        # noise from point to point scatter. Median keeps resonator feature out of estiamte
         noise = 1.4826 * float(np.median(np.abs(np.diff(magnitude)))) / np.sqrt(2)
         snr = depth / noise if noise > 0 else (float("inf") if depth > 0 else 0.0)
 
