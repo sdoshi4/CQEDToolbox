@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 import lmfit
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.ndimage import median_filter
 import matplotlib.pyplot as plt
 
 from labcore.analysis import DatasetAnalysis, FitResult
@@ -432,65 +431,16 @@ class ResonatorSpectroscopy(ProtocolOperation):
         magnitude = np.abs(signal_raw)
         phase = np.arctan2(signal_unwind.imag, signal_unwind.real)
 
-        n = magnitude.size
-        step = float(np.median(np.diff(frequencies)))
+        guess = HangerResponseBruno.guess(frequencies, signal_unwind)
         span = float(frequencies[-1] - frequencies[0])
+        step = float(np.median(np.diff(frequencies)))
+        q_min = guess["f_0"] / span # max linewidth of entire scan
 
-        # Use a running median to subtract away large noise features while keeping your narrow resonator response
-        background_width = int(np.clip(n // 8, 21, 201)) | 1
-        background = median_filter(magnitude, size=background_width, mode="nearest")
-        deviation = magnitude - background
-
-        # Smooth the signed deviation so that noise averages towards zero
-        smooth_width = 5
-        smoothed = np.convolve(deviation, np.ones(smooth_width) / smooth_width, mode="same")
-        point_noise = (1.4826 * np.median(np.abs(deviation - smoothed))
-                       / np.sqrt(1 - 1 / smooth_width))
-        feature_noise = point_noise / np.sqrt(smooth_width)
-
-        peak_index = int(np.argmax(np.abs(smoothed)))
-        feature_height = float(np.abs(smoothed[peak_index]))
-        snr = feature_height / feature_noise if feature_noise > 0 else float("inf")
-
-        half_height = feature_height / 2
-        left = np.flatnonzero(np.abs(smoothed[:peak_index]) <= half_height)
-        right = np.flatnonzero(np.abs(smoothed[peak_index + 1:]) <= half_height)
-        contained = bool(left.size and right.size)
-        if contained:
-            kappa = float(frequencies[peak_index + 1 + right[0]] - frequencies[left[-1]])
-        else:
-            kappa = span / 10
-        kappa = max(kappa, 2 * step)
-
-        f0_guess = float(frequencies[peak_index])
-        # # Off-resonant level at the resonance: the background is taken from a
-        # # running median, so the dip itself does not drag this down.
-        base_level = float(background[peak_index])
-        amplitude = max(base_level, np.finfo(float).eps)
-        contrast = float(np.clip(feature_height / amplitude, 0.02, 0.9))
-        q_l = f0_guess / kappa
-        # # A linewidth wider than the span or narrower than two frequency steps
-        # # cannot locate a resonator, so the fit is not allowed to go there.
-        q_min = f0_guess / span
-        q_e_max = f0_guess / (2 * step)
-
-        # Add guesses and bounds on parameters based on the above analysis
         fit_params = {
-            # "A": lmfit.Parameter("A", value=amplitude, min=0.1 * amplitude, max=10 * amplitude),
-            # "f_0": lmfit.Parameter("f_0", value=f0_guess, min=frequencies[0], max=frequencies[-1]),
-            "Q_i": lmfit.Parameter("Q_i", value=float(np.clip(q_l / (1 - contrast), q_min, 1e6)),
-                                   min=q_min, max=1e6),
-            # Q_e sets the observable width so is capped by our sampling.
-            "Q_e_mag": lmfit.Parameter("Q_e_mag", value=float(np.clip(q_l / contrast, q_min, q_e_max)),
-                                       min=q_min, max=q_e_max),
-            # |theta| < pi/2 keeps Q_c = Q_e_mag / cos(theta) positive while still allowing the circle rotation from an impedance mismatch.
-            # "theta": lmfit.Parameter("theta", value=0.0, min=-np.pi / 2 + 0.05, max=np.pi / 2 - 0.05),
-            # "phase_offset": lmfit.Parameter("phase_offset",
-            #                                 value=float(np.angle(np.mean(signal_unwind))),
-            #                                 min=-2 * np.pi, max=2 * np.pi),
-            # "phase_slope": lmfit.Parameter("phase_slope", value=0.0,
-            #                                min=-20 * np.pi / span, max=20 * np.pi / span), # shouldn't be much phase delay
-            # "transmission_slope": lmfit.Parameter("transmission_slope", value=0, min=-500, max=500),
+            "Q_i": lmfit.Parameter("Q_i", value=float(np.clip(guess["Q_i"], q_min, 1e8)),
+                                   min=q_min, max=1e8),
+            "Q_e_mag": lmfit.Parameter("Q_e_mag", value=float(np.clip(guess["Q_e_mag"], q_min, 1e8)),
+                                       min=q_min, max=1e8),
         }
 
         fit = HangerResponseBruno(frequencies, signal_unwind)
@@ -512,13 +462,17 @@ class ResonatorSpectroscopy(ProtocolOperation):
         # ensure that the predicted/fitted resonator and linewidth are actually in the scan
         f_0 = float(params["f_0"].value)
         reasons = []
-        if not contained:
-            reasons.append("no contained half-height feature")
         if not frequencies[0] + step < f_0 < frequencies[-1] - step:
             reasons.append("f_0 at sweep edge")
         if not np.isfinite(linewidth) or not 2 * step <= linewidth <= 0.25 * span:
             reasons.append("linewidth unresolved or wider than a quarter of the span")
         rejection_reason = "; ".join(reasons) if reasons else None
+
+        fit_magnitude = np.abs(fit_curve) # feature amplitude from the de-noised fit curve
+        depth = float(np.median(fit_magnitude) - fit_magnitude.min())
+        # noise from point-to-point scatter: median keeps dip out of estimate
+        noise = 1.4826 * float(np.median(np.abs(np.diff(magnitude)))) / np.sqrt(2)
+        snr = depth / noise if noise > 0 else (float("inf") if depth > 0 else 0.0)
 
         fig, ax = plt.subplots()
         ax.set_title(fig_title)
