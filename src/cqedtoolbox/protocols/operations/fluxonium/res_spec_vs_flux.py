@@ -440,7 +440,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         self._load_data("freq")
 
 
-    def _analyze_default(self):
+    def analyze(self):
         flux = self.independents["flux"]
         frequencies = self.independents["frequencies"]
         magnitude = np.abs(self.dependents["signal"])
@@ -461,7 +461,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             self.notch_counts[index] = len(centres)
             self.fit_magnitude[index] = result["fit"]
 
-        with DatasetAnalysis(self.data_loc.parent, self.name) as ds:
+        with DatasetAnalysis(self.data_loc, self.name) as ds:
             ds.add(
                 flux=flux,
                 frequencies=frequencies,
@@ -502,9 +502,8 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             )
             trace_axis.legend(fontsize="small")
 
+            ds.add_figure(self.name, fig=figure)
             image_path = ds._new_file_path(ds.savefolders[1], self.name, suffix="png")
-            figure.savefig(image_path)
-            plt.close(figure)
             self.figure_paths.append(image_path)
 
 
