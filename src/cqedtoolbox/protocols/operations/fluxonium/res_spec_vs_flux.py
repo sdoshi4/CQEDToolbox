@@ -19,7 +19,11 @@ from labcore.measurement.storage import run_and_save_sweep
 from labcore.measurement.record import record_as, independent, dependent
 
 from labcore.protocols.base import ProtocolOperation, OperationStatus
-from cqedtoolbox.protocols.parameters import (
+# from cqedtoolbox.protocols.parameters import (
+#     Repetition, ResonatorSpecSteps, StartReadoutFrequency, EndReadoutFrequency,
+#     StartFlux, EndFlux, FluxSteps,
+# )
+from parameters import (
     Repetition, ResonatorSpecSteps, StartReadoutFrequency, EndReadoutFrequency,
     StartFlux, EndFlux, FluxSteps,
 )
