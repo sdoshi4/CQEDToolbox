@@ -318,7 +318,6 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         self.figure_paths = []
         self.notch_centres = None
         self.notch_counts = None
-        self.fit_magnitude = None
 
 
     def _measure_dummy(self) -> Path:
@@ -452,60 +451,45 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         self.figure_paths.clear()
         self.notch_centres = np.full((len(flux), 2), np.nan)
         self.notch_counts = np.zeros(len(flux), dtype=int)
-        self.fit_magnitude = np.full_like(magnitude, np.nan, dtype=float)
 
         for index, trace in enumerate(magnitude):
             try:
                 result = fit_lorentzian_notches(frequencies, trace)
-            except (RuntimeError, ValueError) as error:
+            except (FloatingPointError, RuntimeError, ValueError) as error:
                 logger.info("No notch fit at flux index %d: %s", index, error)
                 continue
 
             centres = result["centres"]
             self.notch_centres[index, : len(centres)] = centres
             self.notch_counts[index] = len(centres)
-            self.fit_magnitude[index] = result["fit"]
 
         with DatasetAnalysis(self.data_loc, self.name) as ds:
             ds.add(
                 flux=flux,
                 frequencies=frequencies,
                 signal_magnitude=magnitude,
-                fitted_magnitude=self.fit_magnitude,
                 notch_centres=self.notch_centres,
                 notch_counts=self.notch_counts,
             )
 
-            figure, (map_axis, trace_axis) = plt.subplots(
-                1, 2, figsize=(13, 5), constrained_layout=True
-            )
-            mesh = map_axis.pcolormesh(
+            figure, axis = plt.subplots(figsize=(12, 5))
+            mesh = axis.pcolormesh(
                 flux, frequencies, magnitude.T, shading="auto", cmap="inferno"
             )
-            figure.colorbar(mesh, ax=map_axis, label="|S| (a.u.)")
+            figure.colorbar(mesh, ax=axis, label="|S| (a.u.)")
             flux_grid = np.broadcast_to(np.asarray(flux)[:, None], self.notch_centres.shape)
             fitted = np.isfinite(self.notch_centres)
-            map_axis.plot(flux_grid[fitted], self.notch_centres[fitted], "w.", ms=5)
-            map_axis.set(
+            axis.scatter(
+                flux_grid[fitted], self.notch_centres[fitted],
+                s=10, c="cyan", linewidths=0, label="Lorentzian fit",
+            )
+            axis.set(
                 xlabel="Flux current (uA)",
                 ylabel="Readout frequency",
                 title="Resonator response with fitted notch centres",
             )
-
-            offset = max(
-                float(np.nanmax(magnitude) - np.nanmin(magnitude)), np.finfo(float).eps
-            ) * 1.2
-            for index, (trace, fit) in enumerate(zip(magnitude, self.fit_magnitude)):
-                trace_axis.plot(frequencies, trace + index * offset, "k-", lw=0.5)
-                trace_axis.plot(frequencies, fit + index * offset, "r--", lw=0.7)
-            trace_axis.plot([], [], "k-", label="measured")
-            trace_axis.plot([], [], "r--", label="Lorentzian fit")
-            trace_axis.set(
-                xlabel="Readout frequency",
-                ylabel="Magnitude + trace offset",
-                title="Trace fits",
-            )
-            trace_axis.legend(fontsize="small")
+            axis.legend()
+            figure.tight_layout()
 
             ds.add_figure(self.name, fig=figure)
             image_path = ds._new_file_path(ds.savefolders[1], self.name, suffix="png")
