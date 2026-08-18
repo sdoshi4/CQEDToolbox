@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from dataclasses import dataclass, field
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -23,6 +24,7 @@ from labcore.protocols.base import (
     EvaluateResult,
     OperationStatus,
     ProtocolOperation,
+    CorrectionParameter,
 )
 # from cqedtoolbox.protocols.parameters import (
 #     Repetition, ResonatorSpecSteps, StartReadoutFrequency, EndReadoutFrequency,
@@ -35,6 +37,23 @@ from parameters import (
 from cqedtoolbox.measurement_lib.qick.single_transmon_v2 import FreqSweepProgram
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class ResSpecVsFluxMinFittedFraction(CorrectionParameter):
+    name: str = field(default="res_spec_vs_flux_min_fitted_fraction", init=False)
+    description: str = field(default="Minimum fraction of data points that must be fitted for a valid measurement", init=False)
+
+    def _qick_getter(self):
+        return self.params.corrections.res_spec_vs_flux.min_good_fraction()
+
+    def _qick_setter(self, v):
+        self.params.corrections.res_spec_vs_flux.min_good_fraction(v)
+
+    def _opx_getter(self):
+        return self.params.corrections.res_spec_vs_flux.min_good_fraction()
+
+    def _opx_setter(self, v):
+        self.params.corrections.res_spec_vs_flux.min_good_fraction(v)
 
 #----------- THIS IS ALL DUMMY DATA GENERATION CODE, NOT USED IN REAL MEASUREMENTS ----------------
 
@@ -276,8 +295,6 @@ def fit_lorentzian_notches(
 
 class ResonatorSpectroscopyVsFlux(ProtocolOperation):
 
-    MIN_FITTED_FRACTION = 0.8
-
     # True fake data params (may change to any)
     _SIM_QI = 8000.0
     _SIM_QE_MAG = 5000.0
@@ -307,6 +324,10 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             start_flux=StartFlux(params),
             end_flux=EndFlux(params),
             flux_steps=FluxSteps(params),
+        )
+
+        self._register_correction_params(
+            min_fitted_fraction=ResSpecVsFluxMinFittedFraction(params)
         )
 
         self.condition = (
@@ -474,7 +495,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
 
             figure, axis = plt.subplots(figsize=(12, 5))
             mesh = axis.pcolormesh(
-                flux, frequencies, magnitude.T, shading="auto", cmap="inferno"
+                flux, frequencies, magnitude.T, shading="auto", cmap="magma"
             )
             figure.colorbar(mesh, ax=axis, label="|S| (a.u.)")
             flux_grid = np.broadcast_to(np.asarray(flux)[:, None], self.notch_centres.shape)
@@ -486,7 +507,6 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             axis.set(
                 xlabel="Flux current (uA)",
                 ylabel="Readout frequency",
-                title="Resonator response with fitted notch centres",
             )
             axis.legend()
             figure.tight_layout()
@@ -511,7 +531,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
         fitted_fraction = float(np.mean(notch_counts > 0))
         one_notch = int(np.sum(notch_counts == 1))
         two_notches = int(np.sum(notch_counts == 2))
-        successful = fitted_fraction >= self.MIN_FITTED_FRACTION
+        successful = fitted_fraction >= self.min_fitted_fraction()
         message = (
             "## Resonator Spectroscopy vs Flux\n"
             f"Flux points (traces): {len(notch_counts)}\n"
@@ -519,7 +539,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             f"({fitted_fraction:.2%})\n"
             f"One-notch fits: {one_notch}\n"
             f"Two-notch fits: {two_notches}\n"
-            f"Required fitted fraction: {self.MIN_FITTED_FRACTION:.0%}\n"
+            f"Required fitted fraction: {self.min_fitted_fraction():.0%}\n"
         )
         self.report_output = [message]
         if not successful:
@@ -531,7 +551,7 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             "notch_fit_coverage",
             successful,
             f"{int(np.sum(notch_counts > 0))}/{len(notch_counts)} traces yielded "
-            f"one or two Lorentzian notches (need {self.MIN_FITTED_FRACTION:.0%})",
+            f"one or two Lorentzian notches (need {self.min_fitted_fraction():.0%})",
         )
         return EvaluateResult(
             OperationStatus.SUCCESS if successful else OperationStatus.FAILURE,

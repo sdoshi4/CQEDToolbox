@@ -35,6 +35,7 @@ dependencies = [
     "ipython",
     "ipywidgets",
     "xarray",
+    "pandas",
     "scikit-learn",
     "qcodes_contrib_drivers",
 ]

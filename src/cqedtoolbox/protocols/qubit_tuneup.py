@@ -25,7 +25,7 @@ select_platform("QICK")
 
 class QubitTuneup(ProtocolBase):
 
-    def __init__(self, params, set_flux_current=None, cnn_checkpoint=None,
+    def __init__(self, params, set_flux_current=None, cnn_checkpoint_dir=None,
                  report_path: Path = Path(".")):
         super().__init__(report_path)
 
@@ -38,10 +38,10 @@ class QubitTuneup(ProtocolBase):
         self.root_branch = BranchBase("QubitTuneup")
         self.root_branch.extend([
             ResonatorSpectroscopy(params),
-            ResonatorSpectroscopyVsGain(params),
-            # res_spec_vs_flux,
-            # FluxOffsetInference(params, source=res_spec_vs_flux,
-            #                     checkpoint_path=cnn_checkpoint),
+            # ResonatorSpectroscopyVsGain(params),
+            res_spec_vs_flux,
+            FluxOffsetInference(params, source=res_spec_vs_flux,
+                                checkpoint_dir=cnn_checkpoint_dir),
             # FluxoniumResonatorTheoryFit(params, source=res_spec_vs_flux),
 
             # SaturationSpectroscopy(params),
@@ -91,9 +91,17 @@ def set_flux_current(value):
 
 
 
-CNN_CHECKPOINT = "fluxonium_inverse_cnn_better.pt"
+# Directory holding the trained ensemble (flux_cnn_seed*.pt).  FluxOffsetInference
+# loads every member: the spread of their parity probabilities is the confidence
+# that decides whether the zero/half assignment is trustworthy.  The ensemble is
+# specific to this device and this readout window, so it must be retrained
+# (02_simulate_and_train.ipynb in Fluxonium-offset-inverse-model) for a new one.
+CNN_CHECKPOINT_DIR = Path(
+    "/Users/shaandoshi/Documents/KouBitLab/FluxoniumAutomation/"
+    "Fluxonium-offset-inverse-model/ML model"
+)
 
 currS.ch2.ramp_current(100, .5, .001)
 QubitTuneup(params,
             set_flux_current=set_flux_current,
-            cnn_checkpoint=CNN_CHECKPOINT).execute()
+            cnn_checkpoint_dir=CNN_CHECKPOINT_DIR).execute()
