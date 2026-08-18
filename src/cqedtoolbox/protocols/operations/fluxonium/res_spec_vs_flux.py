@@ -18,7 +18,12 @@ from labcore.measurement.sweep import sweep_parameter, Sweep, pointer
 from labcore.measurement.storage import run_and_save_sweep
 from labcore.measurement.record import record_as, independent, dependent
 
-from labcore.protocols.base import ProtocolOperation, OperationStatus
+from labcore.protocols.base import (
+    CheckResult,
+    EvaluateResult,
+    OperationStatus,
+    ProtocolOperation,
+)
 # from cqedtoolbox.protocols.parameters import (
 #     Repetition, ResonatorSpecSteps, StartReadoutFrequency, EndReadoutFrequency,
 #     StartFlux, EndFlux, FluxSteps,
@@ -507,12 +512,16 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
             self.figure_paths.append(image_path)
 
 
-    def evaluate(self) -> OperationStatus:
+    def evaluate(self) -> EvaluateResult:
         """Evaluate whether the notch fit succeeded for enough raw traces."""
         if self.notch_counts is None:
-            self.report_output = ["No Lorentzian-notch fits computed. Did analyze() run?"]
-            logger.warning("No Lorentzian-notch fits computed. Did analyze() run?")
-            return OperationStatus.FAILURE
+            reason = "analyze() did not produce Lorentzian-notch fits"
+            self.report_output = [f"## Resonator Spectroscopy vs Flux\n**Failed:** {reason}\n"]
+            logger.warning(reason)
+            return EvaluateResult(
+                OperationStatus.FAILURE,
+                [CheckResult("notch_fit_coverage", False, reason)],
+            )
 
         notch_counts = self.notch_counts
         fitted_fraction = float(np.mean(notch_counts > 0))
@@ -534,4 +543,13 @@ class ResonatorSpectroscopyVsFlux(ProtocolOperation):
                 "Only %.2f%% of flux traces had a significant Lorentzian notch",
                 fitted_fraction * 100,
             )
-        return OperationStatus.SUCCESS if successful else OperationStatus.FAILURE
+        check = CheckResult(
+            "notch_fit_coverage",
+            successful,
+            f"{int(np.sum(notch_counts > 0))}/{len(notch_counts)} traces yielded "
+            f"one or two Lorentzian notches (need {self.MIN_FITTED_FRACTION:.0%})",
+        )
+        return EvaluateResult(
+            OperationStatus.SUCCESS if successful else OperationStatus.FAILURE,
+            [check],
+        )
