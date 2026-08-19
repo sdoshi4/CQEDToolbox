@@ -2,7 +2,7 @@
 
 Analysis-only: it takes no data of its own and instead re-reads what
 ResonatorSpectroscopyVsFlux already measured and notch-fitted, runs it through
-the symmetry + CNN pipeline in `cqedtoolbox.analysis.flux_offset`, and writes
+the symmetry + CNN pipeline in `flux_offset`, and writes
 the bias currents the downstream fluxonium operations need.
 
 The pipeline splits the problem in two.  A fold-symmetry search over the
@@ -162,7 +162,7 @@ class FluxOffsetInference(ProtocolOperation):
 
     def _load_ensemble(self):
         """Load every checkpoint in `checkpoint_dir`; cached across retries."""
-        from analysis.flux_offset import load_model
+        from flux_offset import load_model
 
         if self.models:
             return
@@ -224,7 +224,7 @@ class FluxOffsetInference(ProtocolOperation):
         try:
             # Imported here so that this module, and the operations package,
             # stay importable on machines without torch.
-            from cqedtoolbox.analysis.flux_offset import locate_flux_points
+            from flux_offset import locate_flux_points
         except ImportError as exc:
             self.load_error = f"flux_offset analysis unavailable ({exc})"
             logger.warning(self.load_error)
@@ -366,7 +366,7 @@ class FluxOffsetInference(ProtocolOperation):
     # --- checks ---------------------------------------------------------------
 
     def evaluate(self) -> EvaluateResult:
-        from analysis.flux_offset import STATUS_INCONCLUSIVE
+        from flux_offset import STATUS_INCONCLUSIVE
 
         if self.result is None:
             reason = self.load_error or "analyze() did not run"
@@ -424,7 +424,7 @@ class FluxOffsetInference(ProtocolOperation):
         return EvaluateResult(status, checks)
 
     def _report_block(self, result) -> str:
-        from analysis.flux_offset import STATUS_OK
+        from flux_offset import STATUS_OK
 
         n_models = len(self.models) if self.models else 0
         lines = [
