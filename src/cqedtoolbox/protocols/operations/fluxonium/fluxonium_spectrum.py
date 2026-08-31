@@ -111,3 +111,26 @@ class FluxoniumResonatorFit(Fit):
         data = np.asarray(data, dtype=float)
         fr = float(np.mean(data)) if data.size else 6.463
         return dict(g=60e-3, fr=fr)
+
+
+def fluxonium_f01(EJ, EC, EL, flux, cutoff=FluxoniumResonatorFit.CUTOFF):
+    """Bare |0> -> |1> transition frequency (GHz) at fractional external flux.
+
+    Bare rather than the dressed transition of the joint space `model` builds:
+    measured against it (EJ/EC/EL = 5.3/1.0/0.5, g = 0.067, fr = 6.46) the
+    dressing moves f01 by -2.19 MHz at zero flux and under 0.05 MHz at half.
+    Not worth taking, because g and fr are predictions too -- it would rest on
+    five estimates instead of three to buy a shift smaller than EJ/EC/EL's own
+    uncertainty, and it fails asymmetrically: g^2/(f01 - fr) diverges if a stale
+    fr sits near f01, so a bad input gives a *large* wrong answer, not a small
+    one.  Use `dispersive_shift` to check that regime rather than to correct it.
+    """
+    qubit = _scq().Fluxonium(EJ=EJ, EC=EC, EL=EL, cutoff=cutoff, flux=float(flux))
+    evals = qubit.eigenvals(evals_count=2)
+    return float(evals[1] - evals[0])
+
+
+def dispersive_shift(f01, g, fr):
+    """Diagnostic g^2/(f01 - fr), in the units of `f01`; NaN on resonance."""
+    detuning = float(f01) - float(fr)
+    return np.nan if detuning == 0 else float(g) ** 2 / detuning

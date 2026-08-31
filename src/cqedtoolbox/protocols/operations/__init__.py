@@ -1,6 +1,7 @@
 from cqedtoolbox.protocols.operations.single_qubit.res_spec import ResonatorSpectroscopy
 from cqedtoolbox.protocols.operations.single_qubit.res_spec_vs_gain import ResonatorSpectroscopyVsGain
 from cqedtoolbox.protocols.operations.fluxonium.res_spec_vs_flux import ResonatorSpectroscopyVsFlux
+from cqedtoolbox.protocols.operations.fluxonium.sat_spec_vs_flux import SaturationSpectroscopyVsFlux
 from cqedtoolbox.protocols.operations.single_qubit.res_spec_after_pi import ResonatorSpectroscopyAfterPi
 from cqedtoolbox.protocols.operations.single_qubit.pi_spec import PiSpectroscopy
 from cqedtoolbox.protocols.operations.single_qubit.power_rabi import PowerRabi

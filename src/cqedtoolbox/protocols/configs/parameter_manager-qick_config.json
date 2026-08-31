@@ -179,6 +179,18 @@
     "unit": "",
     "value": 2.0
   },
+  "parameter_manager.corrections.sat_spec_vs_flux.max_span_increases": {
+    "unit": "",
+    "value": 2
+  },
+  "parameter_manager.corrections.sat_spec_vs_flux.min_good_fraction": {
+    "unit": "",
+    "value": 0.6
+  },
+  "parameter_manager.corrections.sat_spec_vs_flux.span_factor": {
+    "unit": "",
+    "value": 2.0
+  },
   "parameter_manager.corrections.t1.averaging_factor": {
     "unit": "",
     "value": 2.0
@@ -426,6 +438,18 @@
   "parameter_manager.q01.scripts.sat_spec.steps": {
     "unit": "",
     "value": 200
+  },
+  "parameter_manager.q01.scripts.sat_spec_vs_flux.current_range": {
+    "unit": "uA",
+    "value": 20.0
+  },
+  "parameter_manager.q01.scripts.sat_spec_vs_flux.freq_span": {
+    "unit": "MHz",
+    "value": 100.0
+  },
+  "parameter_manager.q01.scripts.sat_spec_vs_flux.steps": {
+    "unit": "",
+    "value": 21
   },
   "parameter_manager.q01.scripts.single_shot.steps": {
     "unit": "",

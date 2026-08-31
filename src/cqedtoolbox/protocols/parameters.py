@@ -1157,3 +1157,45 @@ class ResonatorFr(ProtocolParameterBase):
     def _qick_setter(self, value):
         active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
         return nestedAttributeFromString(self.params, f"{active_qubit}.readout.bare_fr")(value)
+
+
+@dataclass
+class SatSpecFluxRange(ProtocolParameterBase):
+    name: str = field(default="sat_spec_flux_range", init=False)
+    description: str = field(default="Width in current of each flux window swept around zero and half flux", init=False)
+
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.scripts.sat_spec_vs_flux.current_range")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.scripts.sat_spec_vs_flux.current_range")(value)
+
+
+@dataclass
+class SatSpecFluxSteps(ProtocolParameterBase):
+    name: str = field(default="sat_spec_flux_steps", init=False)
+    description: str = field(default="Number of flux points per window; the sweep measures twice this many", init=False)
+
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return int(nestedAttributeFromString(self.params, f"{active_qubit}.scripts.sat_spec_vs_flux.steps")())
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.scripts.sat_spec_vs_flux.steps")(int(value))
+
+
+@dataclass
+class SatSpecFluxFreqSpan(ProtocolParameterBase):
+    name: str = field(default="sat_spec_flux_freq_span", init=False)
+    description: str = field(default="Width of the pump sweep centred on the predicted qubit frequency", init=False)
+
+    def _qick_getter(self):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.scripts.sat_spec_vs_flux.freq_span")()
+
+    def _qick_setter(self, value):
+        active_qubit = nestedAttributeFromString(self.params, "active.qubit")()
+        return nestedAttributeFromString(self.params, f"{active_qubit}.scripts.sat_spec_vs_flux.freq_span")(value)
