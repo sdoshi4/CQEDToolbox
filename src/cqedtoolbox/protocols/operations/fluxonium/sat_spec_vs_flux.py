@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import numpy as np
+import json
 import xarray as xr
 import matplotlib.pyplot as plt
 
@@ -30,8 +31,9 @@ from labcore.protocols.base import (CheckResult, Correction, CorrectionParameter
                                     ProtocolOperation)
 
 from cqedtoolbox.measurement_lib.qick.single_transmon_v2 import PulseProbeSpectroscopy
-from cqedtoolbox.protocols.flux_offset.symmetry import extract_resonator_signal
-from cqedtoolbox.protocols.operations.fluxonium.fluxonium_spectrum import (
+from flux_offset.symmetry import extract_resonator_signal, dominant_series
+
+from operations.fluxonium.fluxonium_spectrum import (
     dispersive_shift, fluxonium_f01,
 )
 from cqedtoolbox.protocols.operations.single_qubit.sat_spec import (
@@ -39,7 +41,7 @@ from cqedtoolbox.protocols.operations.single_qubit.sat_spec import (
     MaxAveragingIncreases, MaxPowerIncreases, PowerIncreaseFactor, SNRThreshold,
     SyntheticSatSpecData,
 )
-from cqedtoolbox.protocols.parameters import (
+from parameters import (
     CouplingG, ECParam, EJParam, ELParam, EndSaturationSpecFrequency,
     HalfFluxCurrent, ReadoutFrequency, Repetition, ResonatorFr,
     SatSpecFluxFreqSpan, SatSpecFluxRange, SatSpecFluxSteps,
@@ -49,9 +51,85 @@ from cqedtoolbox.protocols.parameters import (
 
 logger = logging.getLogger(__name__)
 
-#: Step size of the DMT current source, in uA.  Requested currents are snapped
-#: to it so the recorded axis matches what the hardware actually applied.
-DMT_RESOLUTION = 0.125
+DMT_RESOLUTION = 0.125 #: Step size of the DMT current source, in uA
+
+
+# This is for loading in data from a previous resonator spectroscopy vs flux measurement, so that the saturation spectroscopy can be run without having to re-run the resonator spectroscopy
+
+@dataclass
+class SavedResonatorCurveSource:
+    """Minimal ``FluxOffsetInference`` interface needed by saturation spectroscopy."""
+ 
+    result: SimpleNamespace
+    freq_to_ghz: float
+ 
+ 
+def load_saved_resonator_curve(
+    path: str | Path,
+    *,
+    analysis_name: str = "ResonatorSpectroscopyVsFlux",
+    freq_to_ghz: float = 1e-3,
+) -> SavedResonatorCurveSource:
+    """Build a saturation-spectroscopy source from saved resonator-vs-flux analysis.
+ 
+    ``path`` may be the measurement folder, its ``data.ddh5`` file, or its
+    ``ResonatorSpectroscopyVsFlux`` analysis folder.  This reads the saved
+    magnitude map and extracts its dominant notch curve; it does not measure,
+    run flux-offset inference, or update any parameters.
+    """
+    path = Path(path)
+    if path.name == "data.ddh5":
+        analysis_dir = path.parent / analysis_name
+    elif path.name == analysis_name:
+        analysis_dir = path
+    else:
+        analysis_dir = path / analysis_name
+ 
+    def load(name: str) -> np.ndarray:
+        files = sorted(analysis_dir.glob(f"*_{name}.json"))
+        if not files:
+            raise FileNotFoundError(
+                f"No saved {name!r} analysis in {analysis_dir}"
+            )
+        with files[-1].open() as file:
+            return np.asarray(json.load(file)[name], float)
+ 
+    currents = load("flux")
+    frequencies = load("frequencies")
+    magnitude = load("signal_magnitude")
+    if (
+        currents.ndim != 1
+        or frequencies.ndim != 1
+        or magnitude.shape != (len(currents), len(frequencies))
+    ):
+        raise ValueError(
+            "Saved resonator analysis must contain flux[n], frequencies[m], "
+            "and signal_magnitude[n, m]"
+        )
+ 
+    current_order, frequency_order = np.argsort(currents), np.argsort(frequencies)
+    currents = currents[current_order]
+    frequencies = frequencies[frequency_order]
+    magnitude = magnitude[current_order][:, frequency_order]
+    sweep = xr.Dataset({"signal": xr.DataArray(
+        magnitude,
+        coords={"current": currents, "freq": frequencies},
+        dims=("current", "freq"),
+    )})
+    resonances = extract_resonator_signal(sweep)
+    if resonances.empty:
+        raise ValueError("No dominant resonator curve could be extracted")
+    dominant_current, dominant_freq = dominant_series(resonances)
+    if len(dominant_current) < 2:
+        raise ValueError("The saved resonator curve needs at least two fitted traces")
+ 
+    return SavedResonatorCurveSource(
+        result=SimpleNamespace(
+            dominant_current=dominant_current,
+            dominant_freq=dominant_freq * freq_to_ghz,
+        ),
+        freq_to_ghz=freq_to_ghz,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -142,10 +220,7 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
         super().__init__()
         self.params = params
         self.set_flux_current = set_flux_current
-        # Needed for one thing only: the resonator frequency curve, a vector
-        # with no home in the parameter manager.  The window centres come from
-        # the parameter manager, which FluxOffsetInference has already written.
-        self.source = source
+        self.source = source # The source of the resonator spec vs flux curve, either a FluxOffsetInference or a SavedResonatorCurveSource. Used for centering the probe tone
 
         self._register_inputs(
             repetitions=Repetition(params),
@@ -173,13 +248,7 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
             max_power_increases=MaxPowerIncreases(params),
         )
 
-        # The two imported corrections reset a window-shift strategy that has no
-        # counterpart here: the window is recomputed from scratch at every flux
-        # point, so there is nothing to restore.
-        no_window = SimpleNamespace(reset=lambda: None)
-        # One check covering both windows, not one per window: correct() applies
-        # a correction per *failed check*, so two checks sharing these
-        # strategies would widen the span twice in a single attempt.
+        no_window = SimpleNamespace(reset=lambda: None) # window?
         self._register_check("flux_coverage", self._check_coverage, [
             WidenSpanCorrection(self.freq_span, self.span_factor,
                                 self.max_span_increases),
@@ -193,8 +262,7 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
 
         self.condition = ("Success if a qubit peak is found in at least the "
                           "required fraction of flux points in *each* window")
-        # Every attempt re-runs the whole two-window sweep, so the default of
-        # 100 is meaningless here.
+
         self.max_attempts = 4
 
         self.independents = {"flux": [], "frequencies": []}
@@ -235,8 +303,7 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
         if currents.min() < lo or currents.max() > hi:
             raise RuntimeError(
                 f"flux windows span [{currents.min():.3g}, {currents.max():.3g}] uA "
-                f"but the resonator curve only covers [{lo:.3g}, {hi:.3g}] uA; "
-                f"np.interp would silently clamp at the edges."
+                f"but the resonator curve only covers [{lo:.3g}, {hi:.3g}] uA."
             )
         return np.interp(currents, known_current, known_freq)
 
@@ -244,18 +311,18 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
         """Currents, pump centres and probe frequencies for the whole sweep."""
         n = int(self.flux_steps())
         half_width = float(self.flux_range()) / 2
-        # Not sorted: the first n points are the zero-flux window and the second
-        # n the half-flux window, which is how the coverage check splits them.
-        self.currents = np.concatenate([
-            np.linspace(centre - half_width, centre + half_width, n)
-            for centre in (float(self.zero_current()), float(self.half_current()))
-        ])
+
+        zero_flux_currents = np.linspace(float(self.zero_current()) - half_width, float(self.zero_current()) + half_width, n)
+        half_flux_currents = np.linspace(float(self.half_current()) - half_width, float(self.half_current()) + half_width, n)
+        self.currents = np.concatenate([zero_flux_currents, half_flux_currents])
         self.currents = np.round(self.currents / DMT_RESOLUTION) * DMT_RESOLUTION
 
         flux = self._flux_fraction(self.currents)
         EJ, EC, EL = self.EJ(), self.EC(), self.EL()
         f01 = np.array([fluxonium_f01(EJ, EC, EL, phi) for phi in flux])
         self.centers = 1e3 * f01
+
+        # Don't technically need this part
 
         # g and fr diagnose rather than correct -- they are predictions too, and
         # a centre sitting near the resonator is unreliable however it was
@@ -288,16 +355,13 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
             for value, centre, probe in zip(currents, centers, probes):
                 logger.debug(f"flux {value} uA: pump {centre:.1f}, probe {probe:.1f} MHz")
                 self.set_flux_current(float(value))
-                # Read back by QickConfig.config_ when the inner sweep starts,
-                # which QickBoardSweep.setup re-runs once per flux point.
                 self.readout_freq(float(probe))
                 self.start_freq(float(centre) - span / 2)
                 self.end_freq(float(centre) + span / 2)
                 yield {"current": float(value)}
 
-        # Live tuning parameters owned by other operations; they must not be
-        # left holding the last flux point's values.
-        restore = {p: p() for p in (self.readout_freq, self.start_freq, self.end_freq)}
+        # Restore your original values once you're done with the sweep
+        restore = [(p, p()) for p in (self.readout_freq, self.start_freq, self.end_freq)]
         try:
             logger.info("Starting qick saturation spectroscopy vs flux measurement")
             loc, _ = run_and_save_sweep(Sweep(sweep_current) @ PulseProbeSpectroscopy(),
@@ -305,9 +369,9 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
             logger.info("Measurement complete")
             return loc
         finally:
-            for param, value in restore.items():
+            for param, value in restore:
                 param(value)
-            self.set_flux_current(float(self.zero_current()))
+            # self.set_flux_current(np.round(float(self.zero_current) / DMT_RESOLUTION) * DMT_RESOLUTION)
 
     def _measure_dummy(self) -> Path:
         """Synthetic peaks at the predicted centres, with the same layout."""
@@ -339,25 +403,40 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
     # --- loading --------------------------------------------------------------
 
     def _load_data(self, frequency_key):
-        """Flux, a per-point frequency window, and signal[flux, frequency].
-
-        Deliberately not ResonatorSpectroscopyVsFlux's loader: that one collapses
-        the frequency axis to a single shared grid, and here every flux point has
-        its own window, so the axis is genuinely 2-D and neither axis is sorted.
-        """
+        """Flux, a per-point frequency window, and signal[flux, frequency]"""
         path = self.data_loc / "data.ddh5"
         if not path.exists():
             raise FileNotFoundError(f"File {path} does not exist")
 
         data = datadict_from_hdf5(path)
-        shape = 2 * int(self.flux_steps()), int(self.steps())
-        grid = lambda name: np.asarray(data[name]["values"]).reshape((-1, *shape))[0]
+        n_flux, n_freq = 2 * int(self.flux_steps()), int(self.steps())
+        # Two different formats, dummy and qick
+        def grid(name):
+            values = np.asarray(data[name]["values"])
+            if values.shape[-2:] == (n_freq, n_flux):
+                return values.reshape((-1, n_freq, n_flux)).transpose(0, 2, 1)
+            return values.reshape((-1, n_flux, n_freq))
 
-        self.independents["flux"] = grid("current")[:, 0]
-        self.independents["frequencies"] = grid(frequency_key)
-        self.dependents["signal"] = (
-            np.asarray(data["signal"]["values"]).reshape((-1, *shape)).mean(0)
+        signal = grid("signal")
+        # The two platforms store the flux axis differently: the QICK collector
+        # yields one record per flux point, so `current` is written once per
+        # point while `freq` and `signal` carry the whole inner sweep, whereas
+        # the dummy path broadcasts all three over the full grid.
+        current = np.asarray(data["current"]["values"])
+        self.independents["flux"] = (
+            grid("current")[0][:, 0] if current.size == signal.size
+            else current.reshape(-1, n_flux)[0]
         )
+        self.independents["frequencies"] = grid(frequency_key)[0]
+        self.dependents["signal"] = signal.mean(0)
+
+        if (self.independents["flux"].size != n_flux
+                or self.independents["frequencies"].shape != (n_flux, n_freq)
+                or self.dependents["signal"].shape != (n_flux, n_freq)):
+            raise ValueError(
+                f"Loaded data has shape {self.dependents['signal'].shape} "
+                f"but expected ({n_flux}, {n_freq})"
+            )
 
     def _load_data_qick(self):
         self._load_data("freq")
@@ -421,25 +500,31 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
                 peak_frequency=self.peak_freq, snr=self.snr,
                 found=self.found.astype(int),
             )
-            ds.add_figure(self.name, fig=self._make_figure(detuning[0], magnitude))
+            ds.add_figure(self.name, fig=self._make_figure(flux, frequencies, magnitude))
             image_path = ds._new_file_path(ds.savefolders[1], self.name, suffix="png")
             self.figure_paths.append(image_path)
 
-    def _make_figure(self, detuning, magnitude):
-        """One panel per window, on the detuning axis so the maps stay rectangular."""
+    def _make_figure(self, flux, frequencies, magnitude):
+        """One panel per window, on absolute frequency.
+
+        The pump window moves with flux, so each row of the mesh sits at its own
+        frequencies and the map is a slanted band rather than a rectangle.
+        pcolormesh takes the 2-D coordinate grids directly, so no interpolation
+        onto a common axis is needed.
+        """
         figure, axes = plt.subplots(1, 2, figsize=(13, 5))
         for axis, (label, window) in zip(axes, self._windows()):
-            mesh = axis.pcolormesh(self.currents[window], detuning,
-                                   magnitude[window].T, shading="auto",
-                                   cmap="magma", rasterized=True)
+            block = magnitude[window]
+            currents = np.broadcast_to(flux[window, None], block.shape)
+            mesh = axis.pcolormesh(currents, frequencies[window], block,
+                                   shading="nearest", cmap="magma", rasterized=True)
             figure.colorbar(mesh, ax=axis, label="|S| (a.u.)")
-            axis.axhline(0, color="cyan", lw=1, ls="--", label="predicted f01")
+            axis.plot(flux[window], self.centers[window],
+                      color="cyan", lw=1, ls="--", label="predicted f01")
             fitted = window & self.found
-            axis.scatter(self.currents[fitted],
-                         (self.peak_freq - self.centers)[fitted],
+            axis.scatter(flux[fitted], self.peak_freq[fitted],
                          s=12, c="lime", linewidths=0, label="fitted peak")
-            axis.set(xlabel="Flux current (uA)",
-                     ylabel="Detuning from predicted f01 (MHz)",
+            axis.set(xlabel="Flux current (uA)", ylabel="Frequency (MHz)",
                      title=f"{label} flux")
             axis.legend(fontsize=8)
         figure.tight_layout()

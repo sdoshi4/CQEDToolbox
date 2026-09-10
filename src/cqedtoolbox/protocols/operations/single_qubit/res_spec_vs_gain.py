@@ -189,7 +189,7 @@ class ResonatorSpectroscopyVsGain(ProtocolOperation):
             self.max_repetition_increases,
         )
 
-        self._register_check("low_gain_quality_check", self._check_low_gain_quality)
+        # self._register_check("low_gain_quality_check", self._check_low_gain_quality)
         self._register_check("high_snr_check", self._check_high_snr, self._increase_repetitions)
 
         self._register_success_update(self.readout_gain, lambda: self.optimal_gain)

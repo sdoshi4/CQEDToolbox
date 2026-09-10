@@ -253,15 +253,15 @@
   },
   "parameter_manager.q01.flux.half_current": {
     "unit": "uA",
-    "value": 0.0
+    "value": 42.892244499673666
   },
   "parameter_manager.q01.flux.zero_current": {
     "unit": "uA",
-    "value": 0.0
+    "value": 304.2369990579047
   },
   "parameter_manager.q01.pulses.const.gain": {
     "unit": "",
-    "value": 0.075
+    "value": 0.05
   },
   "parameter_manager.q01.pulses.const.len": {
     "unit": "us",
@@ -273,7 +273,7 @@
   },
   "parameter_manager.q01.pulses.pi.gain": {
     "unit": "",
-    "value": 0.00768
+    "value": 0.25
   },
   "parameter_manager.q01.pulses.pi.n_sigma": {
     "unit": "",
@@ -289,15 +289,15 @@
   },
   "parameter_manager.q01.qubit.EC": {
     "unit": "GHz",
-    "value": 1.0
+    "value": 1.142
   },
   "parameter_manager.q01.qubit.EJ": {
     "unit": "GHz",
-    "value": 5.3
+    "value": 3.645
   },
   "parameter_manager.q01.qubit.EL": {
     "unit": "GHz",
-    "value": 0.5
+    "value": 0.559
   },
   "parameter_manager.q01.qubit.T1": {
     "unit": "us",
@@ -329,7 +329,7 @@
   },
   "parameter_manager.q01.qubit.g": {
     "unit": "GHz",
-    "value": 0.067
+    "value": 0.064
   },
   "parameter_manager.q01.qubit.nqz": {
     "unit": "",
@@ -341,7 +341,7 @@
   },
   "parameter_manager.q01.readout.bare_fr": {
     "unit": "GHz",
-    "value": 6.46
+    "value": 6.4615
   },
   "parameter_manager.q01.readout.dac_ch": {
     "unit": "",
@@ -349,7 +349,7 @@
   },
   "parameter_manager.q01.readout.freq": {
     "unit": "MHz",
-    "value": 6462.785292873528
+    "value": 6462.43659176801
   },
   "parameter_manager.q01.readout.gain": {
     "unit": "",
@@ -393,11 +393,11 @@
   },
   "parameter_manager.q01.scripts.res_spec.end_f": {
     "unit": "MHz",
-    "value": 6467.785292873528
+    "value": 6467.43659176801
   },
   "parameter_manager.q01.scripts.res_spec.start_f": {
     "unit": "MHz",
-    "value": 6457.785292873528
+    "value": 6457.43659176801
   },
   "parameter_manager.q01.scripts.res_spec.steps": {
     "unit": "",
@@ -421,11 +421,11 @@
   },
   "parameter_manager.q01.scripts.res_spec_vs_gain.start_g": {
     "unit": "",
-    "value": 0.2
+    "value": 0.3
   },
   "parameter_manager.q01.scripts.res_spec_vs_gain.steps": {
     "unit": "",
-    "value": 12
+    "value": 10
   },
   "parameter_manager.q01.scripts.sat_spec.end_f": {
     "unit": "MHz",
@@ -445,7 +445,7 @@
   },
   "parameter_manager.q01.scripts.sat_spec_vs_flux.freq_span": {
     "unit": "MHz",
-    "value": 100.0
+    "value": 400.0
   },
   "parameter_manager.q01.scripts.sat_spec_vs_flux.steps": {
     "unit": "",
