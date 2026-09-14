@@ -57,6 +57,27 @@ DMT_RESOLUTION = 0.125 #: Step size of the DMT current source, in uA
 
 # This is for loading in data from a previous resonator spectroscopy vs flux measurement, so that the saturation spectroscopy can be run without having to re-run the resonator spectroscopy
 
+def _analysis_dir(path, analysis_name: str) -> Path:
+    """The analysis folder, given it, the measurement folder, or its ddh5."""
+    path = Path(path)
+    if path.name == "data.ddh5":
+        return path.parent / analysis_name
+    if path.name == analysis_name:
+        return path
+    return path / analysis_name
+
+
+def _saved_loader(analysis_dir: Path):
+    """Read one named array out of a DatasetAnalysis folder's JSON files."""
+    def load(name: str) -> np.ndarray:
+        files = sorted(analysis_dir.glob(f"*_{name}.json"))
+        if not files:
+            raise FileNotFoundError(f"No saved {name!r} analysis in {analysis_dir}")
+        with files[-1].open() as file:
+            return np.asarray(json.load(file)[name], float)
+    return load
+
+
 @dataclass
 class SavedResonatorCurveSource:
     """Minimal ``FluxOffsetInference`` interface needed by saturation spectroscopy."""
@@ -78,23 +99,9 @@ def load_saved_resonator_curve(
     magnitude map and extracts its dominant notch curve; it does not measure,
     run flux-offset inference, or update any parameters.
     """
-    path = Path(path)
-    if path.name == "data.ddh5":
-        analysis_dir = path.parent / analysis_name
-    elif path.name == analysis_name:
-        analysis_dir = path
-    else:
-        analysis_dir = path / analysis_name
- 
-    def load(name: str) -> np.ndarray:
-        files = sorted(analysis_dir.glob(f"*_{name}.json"))
-        if not files:
-            raise FileNotFoundError(
-                f"No saved {name!r} analysis in {analysis_dir}"
-            )
-        with files[-1].open() as file:
-            return np.asarray(json.load(file)[name], float)
- 
+    analysis_dir = _analysis_dir(path, analysis_name)
+    load = _saved_loader(analysis_dir)
+
     currents = load("flux")
     frequencies = load("frequencies")
     magnitude = load("signal_magnitude")
@@ -132,6 +139,74 @@ def load_saved_resonator_curve(
         freq_to_ghz=freq_to_ghz,
     )
 
+
+@dataclass
+class SavedQubitCurveSource:
+    """Minimal ``SaturationSpectroscopyVsFlux`` interface the qubit fit needs.
+
+    `FluxoniumQubitTheoryFit` only reads `currents`, `peak_freq`, `found` and
+    `data_loc` off its sources, so a saved sweep can stand in for a live one.
+    """
+
+    currents: np.ndarray
+    peak_freq: np.ndarray
+    found: np.ndarray
+    data_loc: Path
+    window: str
+
+
+def load_saved_qubit_curve(
+    path: str | Path,
+    zero_current: float,
+    half_current: float,
+    *,
+    window: str = "half",
+    analysis_name: str = "SaturationSpectroscopyVsFlux",
+) -> SavedQubitCurveSource:
+    """Rebuild a qubit-fit source from a saved saturation-spec-vs-flux run.
+
+    `analyze()` already stored the extracted line as `flux`, `peak_frequency`
+    and `found`, so nothing is re-fitted here -- this only reads them back and
+    keeps the points belonging to one flux window.
+
+    Each point is assigned to whichever of `zero_current` / `half_current` it
+    sits nearer.  That works for the older two-window datasets, where both
+    windows share one file, and is a no-op for single-window ones; it assumes
+    nothing about ordering, spacing, or the two halves being equal in length.
+
+    ``path`` may be the measurement folder, its ``data.ddh5``, or its
+    ``SaturationSpectroscopyVsFlux`` analysis folder -- the last of which is
+    also named ``..._zero`` or ``..._half`` for sweeps taken after the split,
+    so pass `analysis_name` to match.
+    """
+    if window not in ("zero", "half"):
+        raise ValueError(f"window must be 'zero' or 'half', not {window!r}")
+
+    analysis_dir = _analysis_dir(path, analysis_name)
+    load = _saved_loader(analysis_dir)
+    currents, peak_freq, found = load("flux"), load("peak_frequency"), load("found")
+    if not (currents.shape == peak_freq.shape == found.shape):
+        raise ValueError(
+            f"saved flux{currents.shape}, peak_frequency{peak_freq.shape} and "
+            f"found{found.shape} disagree in length"
+        )
+
+    centre = {"zero": zero_current, "half": half_current}[window]
+    other = {"zero": half_current, "half": zero_current}[window]
+    keep = np.abs(currents - centre) <= np.abs(currents - other)
+    if not keep.any():
+        raise ValueError(
+            f"no saved point is nearer {centre} uA than {other} uA; the sweep "
+            f"covers [{currents.min():.3g}, {currents.max():.3g}] uA"
+        )
+
+    return SavedQubitCurveSource(
+        currents=currents[keep],
+        peak_freq=peak_freq[keep],
+        found=found[keep].astype(bool),
+        data_loc=analysis_dir.parent,
+        window=window,
+    )
 
 # ---------------------------------------------------------------------------
 # Correction parameters
