@@ -439,17 +439,25 @@
     "unit": "",
     "value": 200
   },
-  "parameter_manager.q01.scripts.sat_spec_vs_flux.current_range": {
+  "parameter_manager.q01.scripts.sat_spec_vs_flux.half_current_range": {
     "unit": "uA",
-    "value": 20.0
+    "value": 100.0
   },
-  "parameter_manager.q01.scripts.sat_spec_vs_flux.freq_span": {
+  "parameter_manager.q01.scripts.sat_spec_vs_flux.half_freq_span": {
     "unit": "MHz",
     "value": 400.0
   },
   "parameter_manager.q01.scripts.sat_spec_vs_flux.steps": {
     "unit": "",
     "value": 21
+  },
+  "parameter_manager.q01.scripts.sat_spec_vs_flux.zero_current_range": {
+    "unit": "uA",
+    "value": 20.0
+  },
+  "parameter_manager.q01.scripts.sat_spec_vs_flux.zero_freq_span": {
+    "unit": "MHz",
+    "value": 400.0
   },
   "parameter_manager.q01.scripts.single_shot.steps": {
     "unit": "",

@@ -44,7 +44,8 @@ from cqedtoolbox.protocols.operations.single_qubit.sat_spec import (
 from parameters import (
     CouplingG, ECParam, EJParam, ELParam, EndSaturationSpecFrequency,
     HalfFluxCurrent, ReadoutFrequency, Repetition, ResonatorFr,
-    SatSpecFluxFreqSpan, SatSpecFluxRange, SatSpecFluxSteps,
+    SatSpecFluxSteps, SatSpecHalfFluxRange, SatSpecHalfFreqSpan,
+    SatSpecZeroFluxRange, SatSpecZeroFreqSpan,
     SaturationSpecDriveGain, SaturationSpecSteps, StartSaturationSpecFrequency,
     ZeroFluxCurrent,
 )
@@ -216,12 +217,22 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
     _DUMMY_NOISE_AMP = 0.01
     _DUMMY_ANGLE = np.pi / 4
 
-    def __init__(self, params, set_flux_current=None, source=None):
+    _WINDOW_PARAMS = {
+        "zero": (SatSpecZeroFluxRange, SatSpecZeroFreqSpan, ZeroFluxCurrent),
+        "half": (SatSpecHalfFluxRange, SatSpecHalfFreqSpan, HalfFluxCurrent),
+    }
+
+    def __init__(self, params, window, set_flux_current=None, source=None):
         super().__init__()
+        if window not in self._WINDOW_PARAMS:
+            raise ValueError(f"window must be 'zero' or 'half', not {window!r}")
+        self.window = window
+        self.name = f"{self.name}_{window}"      # distinct dataset per window
         self.params = params
         self.set_flux_current = set_flux_current
         self.source = source # The source of the resonator spec vs flux curve, either a FluxOffsetInference or a SavedResonatorCurveSource. Used for centering the probe tone
 
+        range_param, span_param, centre_param = self._WINDOW_PARAMS[window]
         self._register_inputs(
             repetitions=Repetition(params),
             steps=SaturationSpecSteps(params),
@@ -231,9 +242,10 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
             readout_freq=ReadoutFrequency(params),
             zero_current=ZeroFluxCurrent(params),
             half_current=HalfFluxCurrent(params),
-            flux_range=SatSpecFluxRange(params),
+            window_centre=centre_param(params),
+            flux_range=range_param(params),
             flux_steps=SatSpecFluxSteps(params),
-            freq_span=SatSpecFluxFreqSpan(params),
+            freq_span=span_param(params),
             EC=ECParam(params), EL=ELParam(params), EJ=EJParam(params),
             coupling_g=CouplingG(params), bare_fr=ResonatorFr(params),
         )
@@ -260,8 +272,7 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
                                         self.max_averaging_increases),
         ])
 
-        self.condition = ("Success if a qubit peak is found in at least the "
-                          "required fraction of flux points in *each* window")
+        self.condition = ("Success if a qubit peak is found in at least the required fraction of flux points")
 
         self.max_attempts = 4
 
@@ -310,12 +321,20 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
     def _plan_sweep(self):
         """Currents, pump centres and probe frequencies for the whole sweep."""
         n = int(self.flux_steps())
+        centre = float(self.window_centre())
         half_width = float(self.flux_range()) / 2
 
-        zero_flux_currents = np.linspace(float(self.zero_current()) - half_width, float(self.zero_current()) + half_width, n)
-        half_flux_currents = np.linspace(float(self.half_current()) - half_width, float(self.half_current()) + half_width, n)
-        self.currents = np.concatenate([zero_flux_currents, half_flux_currents])
+        self.currents = np.linspace(centre - half_width, centre + half_width, n)
         self.currents = np.round(self.currents / DMT_RESOLUTION) * DMT_RESOLUTION
+        # Snapping can put two requested points on the same step.  analyze()
+        # groups the extractor's output by current, so duplicates would silently
+        # merge two flux points into one; refuse the plan instead.
+        if len(np.unique(self.currents)) != len(self.currents):
+            raise RuntimeError(
+                f"{n} points across {self.flux_range()} uA space the flux axis "
+                f"more finely than the {DMT_RESOLUTION} uA source step; "
+                f"reduce the step count or widen the range."
+            )
 
         flux = self._flux_fraction(self.currents)
         EJ, EC, EL = self.EJ(), self.EC(), self.EL()
@@ -326,7 +345,9 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
 
         # g and fr diagnose rather than correct -- they are predictions too, and
         # a centre sitting near the resonator is unreliable however it was
-        # computed.  See fluxonium_spectrum.fluxonium_f01.
+        # computed.  See fluxonium_spectrum.fluxonium_f01.  Diagnosis-only here,
+        # not everywhere: fluxonium_theory_fit fits both for real, and
+        # flux_offset_inference reads bare_fr.
         g, fr = self.coupling_g(), self.bare_fr()
         shift = max(abs(dispersive_shift(f, g, fr)) for f in f01)
         logger.info(f"planned {len(self.currents)} flux points; f01 spans "
@@ -409,8 +430,11 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
             raise FileNotFoundError(f"File {path} does not exist")
 
         data = datadict_from_hdf5(path)
-        n_flux, n_freq = 2 * int(self.flux_steps()), int(self.steps())
-        # Two different formats, dummy and qick
+        n_flux, n_freq = int(self.flux_steps()), int(self.steps())
+        # ddh5 stores each field as one flat, row-appended column; `grid` folds
+        # a column back into its (flux, frequency) block, transposing the qick
+        # layout to match the dummy one.  The leading -1 absorbs repeats, hence
+        # `.mean(0)` on the signal and `[0]` on the axes.
         def grid(name):
             values = np.asarray(data[name]["values"])
             if values.shape[-2:] == (n_freq, n_flux):
@@ -464,14 +488,27 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
             magnitude, coords={"current": currents, "freq": detuning},
             dims=("current", "freq"),
         )})
-        table = extract_resonator_signal(sweep, polarity="peak")
+        table = extract_resonator_signal(
+            sweep, polarity="peak",
+            # Saturation spectroscopy has one qubit line per trace, so force the
+            # single-Lorentzian model: an infinite BIC threshold stops the double
+            # ever winning, and two candidates keep one rejected fit from
+            # dropping the whole trace.  ~4x faster than the default 1-or-2 hunt.
+            max_candidates=2, double_bic_improvement=np.inf,
+        )
 
+        # The table is tidy long-format -- one row per accepted resonance, and
+        # no row at all for a current the extractor rejected -- so it has to be
+        # scattered back onto the flux axis.  Whatever is never written stays
+        # NaN/0, which is what "no signal at this flux point" means downstream.
         peak = np.full(len(currents), np.nan)
         snr = np.zeros(len(currents))
         index_of = {float(c): i for i, c in enumerate(currents)}
-        # One row per current: the strongest resonance, as dominant_series does.
-        for row in table.loc[table.groupby("current")["amplitude"].idxmax()].itertuples():
-            index = index_of[float(row.current)]
+        for row in table.loc[
+            # the strongest resonance per current, as dominant_series does
+            table.groupby("current")["amplitude"].idxmax()
+        ].itertuples():
+            index = index_of[float(row.current)]          # table row -> flux index
             peak[index] = row.frequency
             snr[index] = (np.inf if row.fit_rms == 0
                           else abs(row.amplitude / (4 * row.fit_rms)))
@@ -489,6 +526,8 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
         if not np.allclose(detuning, detuning[0]):
             raise ValueError("flux points do not share a common detuning axis")
 
+        # detuning[0], not detuning: the extractor needs one shared 1-D axis,
+        # and the allclose above is what proves every row carries the same one.
         peak, self.snr = self._extract_peaks(detuning[0], magnitude, flux)
         self.peak_freq = peak + self.centers
         self.found = np.isfinite(peak) & (self.snr >= self.snr_threshold())
@@ -505,53 +544,33 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
             self.figure_paths.append(image_path)
 
     def _make_figure(self, flux, frequencies, magnitude):
-        """One panel per window, on absolute frequency.
+        """Absolute frequency against flux current.
 
         The pump window moves with flux, so each row of the mesh sits at its own
         frequencies and the map is a slanted band rather than a rectangle.
         pcolormesh takes the 2-D coordinate grids directly, so no interpolation
         onto a common axis is needed.
         """
-        figure, axes = plt.subplots(1, 2, figsize=(13, 5))
-        for axis, (label, window) in zip(axes, self._windows()):
-            block = magnitude[window]
-            currents = np.broadcast_to(flux[window, None], block.shape)
-            mesh = axis.pcolormesh(currents, frequencies[window], block,
-                                   shading="nearest", cmap="magma", rasterized=True)
-            figure.colorbar(mesh, ax=axis, label="|S| (a.u.)")
-            axis.plot(flux[window], self.centers[window],
-                      color="cyan", lw=1, ls="--", label="predicted f01")
-            fitted = window & self.found
-            axis.scatter(flux[fitted], self.peak_freq[fitted],
-                         s=12, c="lime", linewidths=0, label="fitted peak")
-            axis.set(xlabel="Flux current (uA)", ylabel="Frequency (MHz)",
-                     title=f"{label} flux")
-            axis.legend(fontsize=8)
+        figure, axis = plt.subplots(figsize=(7, 5))
+        currents = np.broadcast_to(flux[:, None], magnitude.shape)
+        mesh = axis.pcolormesh(currents, frequencies, magnitude,
+                               shading="nearest", cmap="magma", rasterized=True)
+        figure.colorbar(mesh, ax=axis, label="|S| (a.u.)")
+        axis.plot(flux, self.centers, color="cyan", lw=1, ls="--",
+                  label="predicted f01")
+        axis.scatter(flux[self.found], self.peak_freq[self.found],
+                     s=12, c="lime", linewidths=0, label="fitted peak")
+        axis.set(xlabel="Flux current (uA)", ylabel="Frequency (MHz)",
+                 title=f"{self.window} flux")
+        axis.legend(fontsize=8)
         figure.tight_layout()
         return figure
 
-    def _windows(self):
-        """(label, boolean mask) for the zero- and half-flux halves of the sweep."""
-        n = int(self.flux_steps())
-        for label, start in (("Zero", 0), ("Half", n)):
-            mask = np.zeros(2 * n, bool)
-            mask[start:start + n] = True
-            yield label, mask
-
     def _check_coverage(self) -> CheckResult:
-        """Both windows must independently clear the threshold.
-
-        One check rather than one per window so that a single correction is
-        applied per attempt, but the fractions stay separate: a window that
-        failed outright must not be able to hide behind a good one.
-        """
         threshold = self.min_good_fraction()
-        parts, passed = [], True
-        for label, window in self._windows():
-            hits, total = int(self.found[window].sum()), int(window.sum())
-            passed &= hits / total >= threshold
-            parts.append(f"{label.lower()} flux {hits}/{total} ({hits / total:.0%})")
+        hits, total = int(self.found.sum()), self.found.size
         return CheckResult(
-            "flux_coverage", passed,
-            f"{', '.join(parts)} showed a qubit peak (need {threshold:.0%} in each)",
+            "flux_coverage", hits / total >= threshold,
+            f"{hits}/{total} ({hits / total:.0%}) {self.window}-flux points showed "
+            f"a qubit peak (need {threshold:.0%})",
         )

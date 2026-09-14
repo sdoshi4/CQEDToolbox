@@ -130,6 +130,44 @@ def fluxonium_f01(EJ, EC, EL, flux, cutoff=FluxoniumResonatorFit.CUTOFF):
     return float(evals[1] - evals[0])
 
 
+class FluxoniumQubitFit(Fit):
+    """Qubit f01 vs *bias current*, fitting EJ/EC/EL.
+
+    coordinates
+        Bias current, uA -- not flux.  The map to flux is inside the model so
+        that the half-flux current can be fitted: `FluxOffsetInference` locates
+        it only to 0.3-5.1 uA, and holding it fixed at even its best case
+        leaves a 13 MHz residual, where floating it gives 0.3 MHz.  The period
+        stays fixed, since the symmetry lattice pins that well.
+
+        fit = FluxoniumQubitFit(currents_uA, f01_ghz)
+        fit.period = 2 * (half_current - zero_current)
+        result = fit.run()
+    """
+
+    #: f01 matches cutoff=120 to six decimals here, at 0.6 ms against 9.1 ms,
+    #: and the fit makes hundreds of calls.
+    CUTOFF = 40
+
+    period = None  # uA per flux quantum; set before run()
+
+    def model(self, coordinates, ECq, ELq, EJ, I_half):
+        flux = 0.5 + (np.asarray(coordinates, dtype=float) - I_half) / self.period
+        return np.array([fluxonium_f01(EJ, ECq, ELq, f, cutoff=self.CUTOFF)
+                         for f in flux])
+
+    @staticmethod
+    def guess(coordinates, data):
+        """Seed I_half at the middle of the swept current; EJ/EC/EL generically.
+
+        The operation overrides all four with the parameter manager's values,
+        so these only matter if the fit is used standalone.
+        """
+        coordinates = np.asarray(coordinates, dtype=float)
+        centre = float(np.mean(coordinates)) if coordinates.size else 0.0
+        return dict(ECq=1.0, ELq=0.5, EJ=3.0, I_half=centre)
+
+
 def dispersive_shift(f01, g, fr):
     """Diagnostic g^2/(f01 - fr), in the units of `f01`; NaN on resonance."""
     detuning = float(f01) - float(fr)

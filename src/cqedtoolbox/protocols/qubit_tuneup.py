@@ -11,6 +11,7 @@ from operations.single_qubit.sat_spec import SaturationSpectroscopy
 from operations.fluxonium.res_spec_vs_flux import ResonatorSpectroscopyVsFlux
 from operations.fluxonium.flux_offset_inference import FluxOffsetInference
 from operations.fluxonium.sat_spec_vs_flux import SaturationSpectroscopyVsFlux, load_saved_resonator_curve
+from operations.fluxonium.fluxonium_qubit_fit import FluxoniumQubitTheoryFit
 
 import cqedtoolbox.instruments.qick.qick_sweep_v2 as qick_sweep_v2
 from cqedtoolbox.protocols.configs.qick_config import QickConfig
@@ -40,15 +41,24 @@ class QubitTuneup(ProtocolBase):
 
         flux_offset = load_saved_resonator_curve(path=Path(r"Z:\Fluxonium\shaan_fluxonium_practice\Automation\CQEDToolbox\src\cqedtoolbox\data\2026-08-31\2026-08-31T141723_98542599-ResonatorSpectroscopyVsFlux"), analysis_name="ResonatorSpectroscopyVsFlux")
 
+        half_sweep = SaturationSpectroscopyVsFlux(
+            params, window="half", set_flux_current=set_flux_current,
+            source=flux_offset)
+        zero_sweep = SaturationSpectroscopyVsFlux(
+            params, window="zero", set_flux_current=set_flux_current,
+            source=flux_offset)
+
         self.root_branch = BranchBase("QubitTuneup")
         self.root_branch.extend([
             # ResonatorSpectroscopy(params),
             # ResonatorSpectroscopyVsGain(params),
             # res_spec_vs_flux,
-            flux_offset,
-            SaturationSpectroscopyVsFlux(params,
-                                         set_flux_current=set_flux_current,
-                                         source=flux_offset),
+            # flux_offset,
+            half_sweep,
+            FluxoniumQubitTheoryFit(params, sources=[half_sweep], label="half"),
+            zero_sweep,
+            FluxoniumQubitTheoryFit(params, sources=[half_sweep, zero_sweep],
+                                    label="final"),
 
             # SaturationSpectroscopy(params),
 
