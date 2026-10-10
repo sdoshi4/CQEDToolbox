@@ -273,7 +273,7 @@ class WindowShiftCorrection(Correction):
 
     @staticmethod
     def _shift_multiplier(idx: int) -> int:
-        """idx 0 → +1, 1 → -1, 2 → +2, 3 → -2, ..."""
+        """idx 0 -> +1, 1 -> -1, 2 -> +2, 3 -> -2, ..."""
         n = idx // 2 + 1
         return n if idx % 2 == 0 else -n
 
@@ -332,7 +332,7 @@ class IncreaseAveragingCorrection(Correction):
         new = int(self._original_reps * (factor ** (self._count + 1)))
         self.reps_param(new)
         self._count += 1
-        self._last_change = f"reps: {old} → {new}"
+        self._last_change = f"reps: {old} -> {new}"
         self.window_correction.reset()
 
     def report_output(self) -> str:
@@ -365,7 +365,7 @@ class IncreaseSamplingRateCorrection(Correction):
         new = int(self._original_steps * (factor ** (self._count + 1)))
         self.steps_param(new)
         self._count += 1
-        self._last_change = f"steps: {old} → {new}"
+        self._last_change = f"steps: {old} -> {new}"
         self.window_correction.reset()
 
     def report_output(self) -> str:
@@ -398,7 +398,7 @@ class IncreasePowerCorrection(Correction):
         new = self._original_gain * (factor ** (self._count + 1))
         self.gain_param(new)
         self._count += 1
-        self._last_change = f"gain: {old:.4f} → {new:.4f}"
+        self._last_change = f"gain: {old:.4f} -> {new:.4f}"
         self.window_correction.reset()
 
     def report_output(self) -> str:
@@ -426,7 +426,7 @@ class ReducePowerCorrection(Correction):
         new = old * factor
         self.gain_param(new)
         self._count += 1
-        self._last_change = f"gain: {old:.4f} → {new:.4f}"
+        self._last_change = f"gain: {old:.4f} -> {new:.4f}"
 
     def report_output(self) -> str:
         return self._last_change

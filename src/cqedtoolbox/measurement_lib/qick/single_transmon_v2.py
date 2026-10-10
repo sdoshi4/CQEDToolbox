@@ -173,6 +173,60 @@ class PulseProbeSpectroscopy(AveragerProgramV2):
         self.pulse(ch=ro_dac_ch, name="read_pulse", t=0)
         self.trigger(ros=[ro_dac_ch], pins=[0], t=cfg['trig_time'])
 
+@QickBoardSweep(
+    PulseVariable('freq', pulse_parameter="pump_pulse", sweep_parameter="freq"),
+    ComplexQICKData('signal', depends_on=['freq'])
+)
+class ContinuousWaveSpectroscopy(AveragerProgramV2):
+    '''
+    Performs two-tone spectroscopy like PulseProbeSpectroscopy, except the pump
+    and probe tones are played simultaneously (both start at t=0) rather than
+    the pump preceding the readout.
+    '''
+
+    def _initialize(self, cfg):
+        ro_adc_ch = cfg['ro_adc_ch']
+        ro_dac_ch = cfg['ro_dac_ch']
+        q_dac_ch = cfg['q_dac_ch']
+
+        self.declare_gen(ch=ro_dac_ch, nqz=cfg['ro_nqz'])
+        self.declare_readout(ch=ro_adc_ch, length=cfg['ro_len'])
+
+        self.declare_gen(ch=q_dac_ch, nqz=cfg['q_nqz'])
+
+        # Pump pulse definition
+        self.add_loop("sat_spec_freqs_loop", self.cfg["sat_spec_freq_steps"])
+        self.add_pulse(ch=q_dac_ch, name='pump_pulse',
+                       style='const',
+                       freq=cfg['sat_spec_freq_loop_var'],  # Sweep variable
+                       length=cfg['q_const_len'],
+                       phase=cfg['q_const_phase'],
+                       gain=cfg['q_const_gain'])
+
+        # Probe pulse definition
+        self.add_readoutconfig(ch=ro_adc_ch, name="readout", freq=cfg['ro_freq'], gen_ch=ro_dac_ch)
+
+        self.add_pulse(ch=ro_dac_ch, name="read_pulse", ro_ch=ro_adc_ch,
+                       style="const",
+                       freq=cfg['ro_freq'],
+                       length=cfg['ro_len'],
+                       phase=cfg['ro_phase'],
+                       gain=cfg['ro_gain'],
+                       )
+
+    def _body(self, cfg):
+        ro_adc_ch = cfg['ro_adc_ch']
+        ro_dac_ch = cfg['ro_dac_ch']
+        q_dac_ch = cfg['q_dac_ch']
+
+        # if you delay the config by too long, you can see the readout get reconfigured in the middle of your pulse
+        self.send_readoutconfig(ch=ro_adc_ch, name="readout", t=0)
+
+        # pump and probe fire together instead of being separated by a delay
+        self.pulse(ch=q_dac_ch, name='pump_pulse', t=0)
+        self.pulse(ch=ro_dac_ch, name="read_pulse", t=0)
+        self.trigger(ros=[ro_adc_ch], pins=[0], t=cfg['trig_time'])
+
 
 @QickBoardSweep(
     PulseVariable("time", pulse_parameter="time_rabi_pulse", sweep_parameter="length"),

@@ -10,13 +10,15 @@ from operations.single_qubit.res_spec_vs_gain import ResonatorSpectroscopyVsGain
 from operations.single_qubit.sat_spec import SaturationSpectroscopy
 from operations.fluxonium.res_spec_vs_flux import ResonatorSpectroscopyVsFlux
 from operations.fluxonium.flux_offset_inference import FluxOffsetInference
-from operations.fluxonium.sat_spec_vs_flux import SaturationSpectroscopyVsFlux, load_saved_resonator_curve
+from operations.fluxonium.sat_spec_vs_flux import SaturationSpectroscopyVsFlux, load_saved_resonator_curve, load_saved_qubit_curve
 from operations.fluxonium.fluxonium_qubit_fit import FluxoniumQubitTheoryFit
 
 import cqedtoolbox.instruments.qick.qick_sweep_v2 as qick_sweep_v2
 from cqedtoolbox.protocols.configs.qick_config import QickConfig
 from cqedtoolbox.instruments.qcodes_drivers.DMT.DMTCurrentSource import DMTCurrentSource
 from cqedtoolbox import setup_measurements
+
+from qcodes_contrib_drivers.drivers.QDevil.QDAC1 import QDac, Mode
 
 
 instruments = Client(timeout = 30)
@@ -33,13 +35,14 @@ class QubitTuneup(ProtocolBase):
 
         # The two analysis operations consume what the flux sweep produced, so
         # they are handed the instance rather than re-reading it from disk.
-        # res_spec_vs_flux = ResonatorSpectroscopyVsFlux(
-        #     params, set_flux_current=set_flux_current
-        # )
-        # flux_offset = FluxOffsetInference(params, source=res_spec_vs_flux,
-        #                                   checkpoint_dir=cnn_checkpoint_dir)
+        res_spec_vs_flux = ResonatorSpectroscopyVsFlux(
+            params, set_flux_current=set_flux_current
+        )
+        flux_offset = FluxOffsetInference(params, source=res_spec_vs_flux,
+                                          checkpoint_dir=cnn_checkpoint_dir)
 
-        flux_offset = load_saved_resonator_curve(path=Path(r"Z:\Fluxonium\shaan_fluxonium_practice\Automation\CQEDToolbox\src\cqedtoolbox\data\2026-08-31\2026-08-31T141723_98542599-ResonatorSpectroscopyVsFlux"), analysis_name="ResonatorSpectroscopyVsFlux")
+        # flux_offset = load_saved_resonator_curve(path=Path(r"Z:\Fluxonium\shaan_fluxonium_practice\Automation\CQEDToolbox\src\cqedtoolbox\data\2026-10-06\2026-10-06T113554_00131094-ResonatorSpectroscopyVsFlux"), analysis_name="ResonatorSpectroscopyVsFlux")
+        # half_sweep = load_saved_qubit_curve(path=Path(r"Z:\Fluxonium\shaan_fluxonium_practice\Automation\CQEDToolbox\src\cqedtoolbox\analysis\SaturationSpectroscopyVsFlux"), analysis_name="2026-09-03T095822_e81567d7-SaturationSpectroscopyVsFlux", window="half", zero_current=params.q01.flux.zero_current(), half_current=params.q01.flux.half_current())
 
         half_sweep = SaturationSpectroscopyVsFlux(
             params, window="half", set_flux_current=set_flux_current,
@@ -50,15 +53,15 @@ class QubitTuneup(ProtocolBase):
 
         self.root_branch = BranchBase("QubitTuneup")
         self.root_branch.extend([
-            # ResonatorSpectroscopy(params),
-            # ResonatorSpectroscopyVsGain(params),
-            # res_spec_vs_flux,
-            # flux_offset,
+            ResonatorSpectroscopy(params),
+            ResonatorSpectroscopyVsGain(params),
+            res_spec_vs_flux,
+            flux_offset,
             half_sweep,
             FluxoniumQubitTheoryFit(params, sources=[half_sweep], label="half"),
-            zero_sweep,
-            FluxoniumQubitTheoryFit(params, sources=[half_sweep, zero_sweep],
-                                    label="final"),
+            # zero_sweep,
+            # FluxoniumQubitTheoryFit(params, sources=[half_sweep, zero_sweep],
+            #                         label="final"),
 
             # SaturationSpectroscopy(params),
 
@@ -91,18 +94,29 @@ qick_sweep_v2.config = conf
 setup_measurements.options.instrument_clients = {'instruments': instruments}
 setup_measurements.options.parameters = params
 
-currS = DMTCurrentSource("currSour", address="ASRL3::INSTR")
-FLUX_CHANNEL = "ch2"
-FLUX_RAMP_STEP = 0.25   # uA per step, walked rather than jumped
-FLUX_RAMP_DELAY = 0.001  # s between steps
+# currS = DMTCurrentSource("currSour", address="ASRL3::INSTR")
+# FLUX_CHANNEL = "ch2"
+# FLUX_RAMP_STEP = 0.25   # uA per step, walked rather than jumped
+# FLUX_RAMP_DELAY = 0.001  # s between steps
+
+# def set_flux_current(value):
+#     """Ramp the flux bias to `value` (uA)."""
+#     getattr(currS, FLUX_CHANNEL).ramp_current(
+#         float(value), FLUX_RAMP_STEP, FLUX_RAMP_DELAY
+#     )
+
+qdac = QDac(name="qdac", address="ASRL4::INSTR")
+
+
+R = 8.2*1e3 # 8.2kOhm
+CHANNEL = "ch01"
 
 def set_flux_current(value):
-    """Ramp the flux bias to `value` (uA)."""
-    getattr(currS, FLUX_CHANNEL).ramp_current(
-        float(value), FLUX_RAMP_STEP, FLUX_RAMP_DELAY
-    )
-
-
+    voltage = value * 1e-6 * R
+    if (voltage >= 10):
+        raise ValueError("ERROR: Too high a voltage")
+    getattr(qdac, CHANNEL).v(voltage)
+    print("Set flux current to {} uA ({} V)".format(value, voltage))
 
 
 # Directory holding the trained ensemble (flux_cnn_seed*.pt).  FluxOffsetInference
@@ -114,7 +128,8 @@ CNN_CHECKPOINT_DIR = Path(
     "./analysis/flux_offset"
 )
 
-currS.ch2.ramp_current(270, .5, .001)
+# currS.ch2.ramp_current(270, .5, .001)
+set_flux_current(0)
 QubitTuneup(params,
             set_flux_current=set_flux_current,
             cnn_checkpoint_dir=CNN_CHECKPOINT_DIR).execute()

@@ -31,7 +31,7 @@ from labcore.protocols.base import (CheckResult, Correction, CorrectionParameter
                                     ProtocolOperation)
 
 from cqedtoolbox.measurement_lib.qick.single_transmon_v2 import PulseProbeSpectroscopy
-from flux_offset.symmetry import extract_resonator_signal, dominant_series
+from flux_offset.symmetry import extract_resonator_signal, dominant_series, first_freq
 
 from operations.fluxonium.fluxonium_spectrum import (
     dispersive_shift, fluxonium_f01,
@@ -127,7 +127,8 @@ def load_saved_resonator_curve(
     resonances = extract_resonator_signal(sweep)
     if resonances.empty:
         raise ValueError("No dominant resonator curve could be extracted")
-    dominant_current, dominant_freq = dominant_series(resonances)
+    # dominant_current, dominant_freq = dominant_series(resonances)
+    dominant_current, dominant_freq = first_freq(resonances)
     if len(dominant_current) < 2:
         raise ValueError("The saved resonator curve needs at least two fitted traces")
  
@@ -271,7 +272,7 @@ class WidenSpanCorrection(Correction):
         new = self._original * (self.factor_param() ** (self._count + 1))
         self.span_param(new)
         self._count += 1
-        self._last_change = f"span: {old:.1f} → {new:.1f} MHz"
+        self._last_change = f"span: {old:.1f} -> {new:.1f} MHz"
 
     def report_output(self) -> str:
         return self._last_change
@@ -454,6 +455,7 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
                 self.readout_freq(float(probe))
                 self.start_freq(float(centre) - span / 2)
                 self.end_freq(float(centre) + span / 2)
+                print("Probe at {:.3f} MHz, pump at {:.3f} MHz, flux {:.3f} uA".format(probe, centre, value))
                 yield {"current": float(value)}
 
         # Restore your original values once you're done with the sweep

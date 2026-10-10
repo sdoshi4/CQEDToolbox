@@ -331,7 +331,7 @@ class FluxOffsetInference(ProtocolOperation):
                 label="extracted")
         if has_second.any():
             ax.plot(cur[has_second], f_high[has_second], ".", ms=6,
-                    color="tab:red", label="second notch (e0-e1)")
+                    color="tab:pink", label="second notch (e0-e1)")
         for j, v in enumerate(result.zero_all):
             ax.axvline(v, color="tab:green", lw=2,
                        label="zero flux" if j == 0 else None)

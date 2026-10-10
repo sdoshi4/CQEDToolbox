@@ -745,3 +745,22 @@ def dominant_series(resonances: pd.DataFrame):
     dom = resonances.loc[resonances.groupby("current")["amplitude"].idxmax()]
     dom = dom.sort_values("current")
     return dom["current"].to_numpy(float), dom["frequency"].to_numpy(float)
+
+def first_freq(resonances: pd.DataFrame):
+    """One frequency per current: the resonance that comes first in frequency.
+
+    Same shape as `dominant_series` -- `(current[n], frequency[n])`, sorted by
+    current -- but selected by position rather than by depth.  A trace fitted
+    with one resonance contributes that one; a trace fitted with two
+    contributes the lower-frequency of the pair, i.e. `resonance_index == 0`,
+    since `extract_resonator_signal` orders components low to high.
+
+    This is the "low branch" that `dominant_series` deliberately avoids for
+    *folding* (see its docstring: the low branch flips wherever the second
+    component is spurious).  Use it where you want the lower line itself --
+    reading off the g0-g1 side of an avoided crossing, for instance -- not as a
+    drop-in input to the symmetry search.
+    """
+    low = resonances.loc[resonances.groupby("current")["frequency"].idxmin()]
+    low = low.sort_values("current")
+    return low["current"].to_numpy(float), low["frequency"].to_numpy(float)
