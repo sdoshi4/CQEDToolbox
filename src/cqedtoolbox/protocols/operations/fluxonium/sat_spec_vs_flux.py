@@ -1,13 +1,13 @@
-"""Saturation spectroscopy repeated across flux, near zero and half flux.
+"""Saturation spectroscopy repeated across flux, around zero or half flux.
 
-Both tones move with the bias current.  The pump window is centred on the
-scqubits prediction for f01 at that flux; the readout tone follows the
-resonator's measured dressed frequency, which `FluxOffsetInference` already
-extracted from the resonator-vs-flux sweep and left on its `FluxPoints`.
+One instance measures one window.  Both tones move with the bias current: the
+pump window is centred on the scqubits prediction for f01 at that flux, and the
+readout tone follows the resonator notch that ResonatorSpectroscopyVsFlux
+already fitted at that current.
 
-Success is a coverage fraction per window rather than a fit at every point:
-the prediction is only as good as EJ/EC/EL, so the edges of a window are
-expected to fail, and a per-point check would abort on the first of them.
+Success is a coverage fraction rather than a fit at every point: the prediction
+is only as good as EJ/EC/EL, so the edges of a window are expected to fail, and
+a per-point check would abort on the first of them.
 """
 
 import logging
@@ -31,7 +31,7 @@ from labcore.protocols.base import (CheckResult, Correction, CorrectionParameter
                                     ProtocolOperation)
 
 from cqedtoolbox.measurement_lib.qick.single_transmon_v2 import PulseProbeSpectroscopy
-from flux_offset.symmetry import extract_resonator_signal, dominant_series, first_freq
+from flux_offset.symmetry import extract_resonator_signal
 
 from operations.fluxonium.fluxonium_spectrum import (
     dispersive_shift, fluxonium_f01,
@@ -54,8 +54,18 @@ logger = logging.getLogger(__name__)
 
 DMT_RESOLUTION = 0.125 #: Step size of the DMT current source, in uA
 
+#: How far from the known readout frequency a notch may sit and still be taken
+#: for the resonator, MHz.  Measured on 2026-10-10 the resonator moves only
+#: 23 kHz across the zero-flux window and 129 kHz across the half-flux one,
+#: while the spurious satellite sits ~2.7 MHz above it -- so this is roughly
+#: 15x the real motion and still comfortably excludes the satellite.
+PROBE_SEARCH_BAND = 2.0
 
-# This is for loading in data from a previous resonator spectroscopy vs flux measurement, so that the saturation spectroscopy can be run without having to re-run the resonator spectroscopy
+
+# ---------------------------------------------------------------------------
+# Replaying saved sweeps, so an operation can run without repeating the
+# measurement that normally feeds it
+# ---------------------------------------------------------------------------
 
 def _analysis_dir(path, analysis_name: str) -> Path:
     """The analysis folder, given it, the measurement folder, or its ddh5."""
@@ -80,64 +90,35 @@ def _saved_loader(analysis_dir: Path):
 
 @dataclass
 class SavedResonatorCurveSource:
-    """Minimal ``FluxOffsetInference`` interface needed by saturation spectroscopy."""
- 
-    result: SimpleNamespace
-    freq_to_ghz: float
- 
- 
+    """Stands in for ``ResonatorSpectroscopyVsFlux``.
+
+    The attribute names deliberately match that operation's, so
+    `_resonator_probe` reads a live sweep and a replayed one through the same
+    code without an adapter.
+    """
+
+    independents: dict          # {"flux": uA, "frequencies": MHz}
+    dependents: dict            # {"signal": |S| map, (n_flux, n_freq)}
+    notch_centres: np.ndarray   # (n_flux, 2), NaN-padded
+
+
 def load_saved_resonator_curve(
     path: str | Path,
     *,
     analysis_name: str = "ResonatorSpectroscopyVsFlux",
-    freq_to_ghz: float = 1e-3,
 ) -> SavedResonatorCurveSource:
-    """Build a saturation-spectroscopy source from saved resonator-vs-flux analysis.
- 
-    ``path`` may be the measurement folder, its ``data.ddh5`` file, or its
-    ``ResonatorSpectroscopyVsFlux`` analysis folder.  This reads the saved
-    magnitude map and extracts its dominant notch curve; it does not measure,
-    run flux-offset inference, or update any parameters.
-    """
-    analysis_dir = _analysis_dir(path, analysis_name)
-    load = _saved_loader(analysis_dir)
+    """Replay a previous resonator-vs-flux sweep as a probe-frequency source.
 
-    currents = load("flux")
-    frequencies = load("frequencies")
-    magnitude = load("signal_magnitude")
-    if (
-        currents.ndim != 1
-        or frequencies.ndim != 1
-        or magnitude.shape != (len(currents), len(frequencies))
-    ):
-        raise ValueError(
-            "Saved resonator analysis must contain flux[n], frequencies[m], "
-            "and signal_magnitude[n, m]"
-        )
- 
-    current_order, frequency_order = np.argsort(currents), np.argsort(frequencies)
-    currents = currents[current_order]
-    frequencies = frequencies[frequency_order]
-    magnitude = magnitude[current_order][:, frequency_order]
-    sweep = xr.Dataset({"signal": xr.DataArray(
-        magnitude,
-        coords={"current": currents, "freq": frequencies},
-        dims=("current", "freq"),
-    )})
-    resonances = extract_resonator_signal(sweep)
-    if resonances.empty:
-        raise ValueError("No dominant resonator curve could be extracted")
-    # dominant_current, dominant_freq = dominant_series(resonances)
-    dominant_current, dominant_freq = first_freq(resonances)
-    if len(dominant_current) < 2:
-        raise ValueError("The saved resonator curve needs at least two fitted traces")
- 
+    ``path`` may be the measurement folder, its ``data.ddh5``, or its analysis
+    folder.  Nothing is re-fitted: `ResonatorSpectroscopyVsFlux.analyze()`
+    already ran `fit_lorentzian_notches` over every trace and saved the result,
+    so this only reads it back.
+    """
+    load = _saved_loader(_analysis_dir(path, analysis_name))
     return SavedResonatorCurveSource(
-        result=SimpleNamespace(
-            dominant_current=dominant_current,
-            dominant_freq=dominant_freq * freq_to_ghz,
-        ),
-        freq_to_ghz=freq_to_ghz,
+        independents={"flux": load("flux"), "frequencies": load("frequencies")},
+        dependents={"signal": load("signal_magnitude")},
+        notch_centres=load("notch_centres"),
     )
 
 
@@ -293,6 +274,10 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
     _DUMMY_NOISE_AMP = 0.01
     _DUMMY_ANGLE = np.pi / 4
 
+    #: (current range, pump span, window centre) parameters per window.  The
+    #: ranges differ because fitting EJ/EC/EL needs a wide half-flux sweep,
+    #: while the spans stay independent so the zero-flux one can be narrowed
+    #: against the generator's mirror image without shrinking the other.
     _WINDOW_PARAMS = {
         "zero": (SatSpecZeroFluxRange, SatSpecZeroFreqSpan, ZeroFluxCurrent),
         "half": (SatSpecHalfFluxRange, SatSpecHalfFreqSpan, HalfFluxCurrent),
@@ -304,9 +289,13 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
             raise ValueError(f"window must be 'zero' or 'half', not {window!r}")
         self.window = window
         self.name = f"{self.name}_{window}"      # distinct dataset per window
-        self.params = params
         self.set_flux_current = set_flux_current
-        self.source = source # The source of the resonator spec vs flux curve, either a FluxOffsetInference or a SavedResonatorCurveSource. Used for centering the probe tone
+        # Where the readout tone is placed at each flux point: a
+        # ResonatorSpectroscopyVsFlux operation, or load_saved_resonator_curve
+        # replaying one.  Not FluxOffsetInference -- that only adds the CNN
+        # pipeline's own branch pick on top of the same notch fits, and the
+        # zero/half currents it produces are read from the parameter manager.
+        self.source = source
 
         range_param, span_param, centre_param = self._WINDOW_PARAMS[window]
         self._register_inputs(
@@ -316,6 +305,8 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
             end_freq=EndSaturationSpecFrequency(params),
             drive_gain=SaturationSpecDriveGain(params),
             readout_freq=ReadoutFrequency(params),
+            # Both calibration points, because the flux fraction needs the
+            # pair; `window_centre` aliases whichever one this window sweeps.
             zero_current=ZeroFluxCurrent(params),
             half_current=HalfFluxCurrent(params),
             window_centre=centre_param(params),
@@ -336,7 +327,10 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
             max_power_increases=MaxPowerIncreases(params),
         )
 
-        no_window = SimpleNamespace(reset=lambda: None) # window?
+        # The two imported corrections take a window-shift strategy only to
+        # call .reset() on it.  There is no fixed window here -- it is rebuilt
+        # from the prediction at every flux point -- so a no-op stands in.
+        no_window = SimpleNamespace(reset=lambda: None)
         self._register_check("flux_coverage", self._check_coverage, [
             WidenSpanCorrection(self.freq_span, self.span_factor,
                                 self.max_span_increases),
@@ -348,8 +342,10 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
                                         self.max_averaging_increases),
         ])
 
-        self.condition = ("Success if a qubit peak is found in at least the required fraction of flux points")
-
+        self.condition = ("Success if a qubit peak is found in at least the "
+                          "required fraction of flux points")
+        # Every attempt re-measures the whole window, so the default of 100 is
+        # meaningless here.
         self.max_attempts = 4
 
         self.independents = {"flux": [], "frequencies": []}
@@ -374,25 +370,52 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
         return 0.5 * (currents - zero) / (half - zero)
 
     def _resonator_probe(self, currents):
-        """The measured dressed resonator frequency at each current."""
-        result = getattr(self.source, "result", None)
-        if result is None or result.dominant_freq is None:
+        """Readout frequency at each flux point: the deepest notch lying close
+        to the one ResonatorSpectroscopy already found.
+
+        The band and the depth rule do separate jobs.  The band rejects a
+        narrow spurious feature about 3 MHz above the resonator which, on the
+        strongly curved baseline the readout line sits on, frequently fits as
+        the *deeper* of the two; parking the tone there costs all of the qubit
+        signal.  Depth then picks the strongest of whatever survives, so
+        widening PROBE_SEARCH_BAND to admit the e0-e1 branch near half flux
+        hands the choice between the two branches back to measured contrast.
+        """
+        source = self.source
+        known_current = np.asarray(source.independents["flux"], float)
+        frequencies = np.asarray(source.independents["frequencies"], float)
+        magnitude = np.abs(np.asarray(source.dependents["signal"]))
+        centres = np.atleast_2d(np.asarray(source.notch_centres, float))
+        reference = float(self.readout_freq())
+
+        anchor_current, anchor_frequency = [], []
+        for index, current in enumerate(known_current):
+            # NaN padding fails the comparison, so unfitted slots drop out here.
+            candidates = centres[index][
+                np.abs(centres[index] - reference) <= PROBE_SEARCH_BAND
+            ]
+            if candidates.size == 0:
+                continue
+            trace = magnitude[index]
+            depth = [np.median(trace) - trace[np.argmin(np.abs(frequencies - f))]
+                     for f in candidates]
+            anchor_current.append(current)
+            anchor_frequency.append(candidates[int(np.argmax(depth))])
+
+        if len(anchor_current) < 2:
             raise RuntimeError(
-                "No resonator frequency curve available. Construct this "
-                "operation with source=<FluxOffsetInference instance> that has "
-                "run far enough to extract the dominant resonance."
+                f"only {len(anchor_current)} of {len(known_current)} traces have a "
+                f"notch within {PROBE_SEARCH_BAND} MHz of {reference:.3f} MHz; "
+                f"check the readout frequency against the resonator sweep"
             )
-        # dominant_freq is in the units of the Dataset FluxOffsetInference built,
-        # i.e. native scaled by freq_to_ghz; undo that to get back to MHz.
-        known_current = np.asarray(result.dominant_current, float)
-        known_freq = np.asarray(result.dominant_freq, float) / self.source.freq_to_ghz
-        lo, hi = known_current.min(), known_current.max()
-        if currents.min() < lo or currents.max() > hi:
-            raise RuntimeError(
-                f"flux windows span [{currents.min():.3g}, {currents.max():.3g}] uA "
-                f"but the resonator curve only covers [{lo:.3g}, {hi:.3g}] uA."
-            )
-        return np.interp(currents, known_current, known_freq)
+        logger.info(
+            f"probe curve: {len(anchor_current)}/{len(known_current)} anchors "
+            f"within {PROBE_SEARCH_BAND} MHz of {reference:.3f}, spanning "
+            f"{min(anchor_frequency):.3f}-{max(anchor_frequency):.3f} MHz"
+        )
+        # np.interp clamps outside the anchors, which is what we want: the
+        # resonator moves well under a linewidth across either window.
+        return np.interp(currents, anchor_current, anchor_frequency)
 
     def _plan_sweep(self):
         """Currents, pump centres and probe frequencies for the whole sweep."""
@@ -547,6 +570,21 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
 
     # --- analysis -------------------------------------------------------------
 
+    @staticmethod
+    def _polarity(sweep):
+        """Whether the qubit shows up as a dip or a peak in |S|, from the data."""
+        scores = {}
+        for polarity in ("dip", "peak"):
+            table = extract_resonator_signal(sweep, polarity=polarity,
+                                             max_candidates=2,
+                                             double_bic_improvement=np.inf)
+            scores[polarity] = (0.0 if table.empty else
+                                float(np.median(table.amplitude / (4 * table.fit_rms))))
+        best = max(scores, key=scores.get)
+        logger.info(f"qubit line reads as a {best} "
+                    f"(median SNR dip={scores['dip']:.2f}, peak={scores['peak']:.2f})")
+        return best
+
     def _extract_peaks(self, detuning, magnitude, currents):
         """Per flux point: peak detuning and SNR, NaN/0 where nothing was found.
 
@@ -556,17 +594,24 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
         and background-hugging fits, so a trace it drops *is* the "no signal at
         this flux point" answer.
 
-        `polarity="peak"` and not both polarities: the probe was placed on the
-        g-state dressed resonance, so driving the qubit moves the resonance away
-        from it and |S| rises.  A second "dip" pass would only give noise a
-        chance to outscore the real feature and inflate the coverage fraction.
+        The polarity is measured rather than assumed -- see `_polarity`.  An
+        earlier version hard-coded "peak", reasoning that a probe sitting on
+        the g-state resonance sees |S| rise when the qubit is driven; on the
+        2026-10-10 data the line is unambiguously a dip (median SNR 0.94
+        against 0.60), so that reasoning does not survive contact with the
+        hardware.
         """
         sweep = xr.Dataset({"signal": xr.DataArray(
             magnitude, coords={"current": currents, "freq": detuning},
             dims=("current", "freq"),
         )})
+        # Polarity is chosen once for the whole map rather than assumed: which
+        # way |S| moves when the qubit is driven depends on where the probe
+        # sits on the resonance, and on this setup it goes *down*.  Deciding
+        # globally (one bit, from the median SNR) rather than per trace means
+        # noise cannot pick the flattering sign for individual points.
         table = extract_resonator_signal(
-            sweep, polarity="peak",
+            sweep, polarity=self._polarity(sweep),
             # Saturation spectroscopy has one qubit line per trace, so force the
             # single-Lorentzian model: an infinite BIC threshold stops the double
             # ever winning, and two candidates keep one rejected fit from
@@ -582,7 +627,7 @@ class SaturationSpectroscopyVsFlux(ProtocolOperation):
         snr = np.zeros(len(currents))
         index_of = {float(c): i for i, c in enumerate(currents)}
         for row in table.loc[
-            # the strongest resonance per current, as dominant_series does
+            # the strongest resonance per current
             table.groupby("current")["amplitude"].idxmax()
         ].itertuples():
             index = index_of[float(row.current)]          # table row -> flux index

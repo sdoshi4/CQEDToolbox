@@ -46,10 +46,10 @@ class QubitTuneup(ProtocolBase):
 
         half_sweep = SaturationSpectroscopyVsFlux(
             params, window="half", set_flux_current=set_flux_current,
-            source=flux_offset)
+            source=res_spec_vs_flux)
         zero_sweep = SaturationSpectroscopyVsFlux(
             params, window="zero", set_flux_current=set_flux_current,
-            source=flux_offset)
+            source=res_spec_vs_flux)
 
         self.root_branch = BranchBase("QubitTuneup")
         self.root_branch.extend([

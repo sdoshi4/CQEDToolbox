@@ -61,8 +61,6 @@ class FluxPoints:
     # residual -- the one picture that shows *why* the centres are where they
     # are, and what a bad result looks like (shallow or absent minima).
     symmetry_result: Optional[SymmetryResult] = None
-    dominant_current: Optional[np.ndarray] = None
-    dominant_freq: Optional[np.ndarray] = None
     notes: List[str] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -210,10 +208,6 @@ def locate_flux_points(ds, models, fit_lorentzian_notches=None, *,
     x, y, keep = _symmetry_series(ds)
     sym = find_symmetry(x, y, keep, verbose=False)
     q = symmetry_quality(sym)
-    # Carried onto every FluxPoints built from here on, including the abstains:
-    # a caller that needs the resonance curve still needs it when the flux
-    # points themselves could not be pinned down.
-    dominant = dict(dominant_current=x, dominant_freq=y)
 
     # -- period ---------------------------------------------------------------
     if q.usable:
@@ -225,8 +219,7 @@ def locate_flux_points(ds, models, fit_lorentzian_notches=None, *,
     else:
         notes += q.reasons + ["no period from either method"]
         return _finish(FluxPoints(STATUS_INCONCLUSIVE, symmetry=q,
-                                  symmetry_result=sym, notes=notes,
-                                  **dominant), verbose)
+                                  symmetry_result=sym, notes=notes), verbose)
 
     # -- CNN ------------------------------------------------------------------
     x_start = float(cur[valid].min())
@@ -296,15 +289,13 @@ def locate_flux_points(ds, models, fit_lorentzian_notches=None, *,
         return _finish(FluxPoints(STATUS_INCONCLUSIVE, period=period,
                                   period_source=period_source, symmetry=q,
                                   symmetry_result=sym,
-                                  notes=notes + q.reasons,
-                                  **dominant), verbose)
+                                  notes=notes + q.reasons), verbose)
     if not q.usable and not confident:
         notes.append("symmetry failed and the CNN is not confident either")
         return _finish(FluxPoints(STATUS_INCONCLUSIVE, period=period,
                                   period_source=period_source, symmetry=q,
                                   symmetry_result=sym,
-                                  notes=notes + q.reasons,
-                                  **dominant), verbose)
+                                  notes=notes + q.reasons), verbose)
 
     status = (STATUS_UNCERTAIN
               if (degrade or contradicted or not confident or q.status != SYM_OK)
@@ -319,6 +310,5 @@ def locate_flux_points(ds, models, fit_lorentzian_notches=None, *,
         parity_prob=pred["parity_prob"], parity_spread=pred["parity_spread"],
         e0e1_center=e0e1_center, e0e1_agreement=e0e1_agree,
         symmetry=q, symmetry_result=sym, notes=notes + q.reasons,
-        **dominant,
     )
     return _finish(out, verbose)
